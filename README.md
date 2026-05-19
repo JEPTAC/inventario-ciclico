@@ -186,3 +186,16 @@ Cambio estructural:
 - En primera sincronización no se auto-cuenta toda la base: se crea agenda obligatoria del día.
 - El panel Inventario muestra `countTasks` con `taskType = conteo_diario_pareto`.
 - Metraje de cables: módulo separado, cada 15 días, selección aleatoria pura, sin Pareto ni criticidad.
+
+
+## Versión v19 - Corrección de bloqueo de carga
+
+Corrige el error:
+
+`Uncaught SyntaxError: Identifier 'forceCableMeterTasks' has already been declared`
+
+Causa:
+En la v18 quedaron dos funciones `forceCableMeterTasks`. El navegador detiene todo el archivo `app.js`, por eso la pantalla se queda pegada en "Inicializando aplicación...".
+
+Corrección:
+Se eliminó la función duplicada antigua y se conserva la versión nueva del módulo de metraje anual por sesión cada 15 días.
