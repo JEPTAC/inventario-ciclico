@@ -1,4 +1,4 @@
-# Inventario Cíclico SIESA - Firebase + Drive v12
+# Inventario Cíclico SIESA - Firebase + Drive v13 v12
 
 Aplicación web estática para GitHub Pages con Firebase Authentication, Firestore y lectura del Excel diario `Excel_siesa.xls` desde Google Drive.
 
@@ -99,3 +99,44 @@ Para prueba local con Live Server:
 http://localhost:5500
 http://127.0.0.1:5500
 ```
+
+
+## Corrección v13
+
+- El token de Drive ahora se valida antes de buscar el Excel.
+- Si Drive devuelve 401, la app limpia el token y pide reconectar Drive.
+- La sincronización no se dispara varias veces en paralelo.
+- La sincronización automática de las 8:00 a.m. no abre popups; solo verifica tareas si Drive ya fue conectado manualmente.
+- La agenda diaria exige materiales por contar cuando ya existe base SIESA en Firestore.
+
+
+## Corrección v14
+
+- Si el panel de inventario aparece vacío, el jefe logístico o super admin puede crear tareas obligatorias del día.
+- Después de sincronizar SIESA, la app intenta completar automáticamente la agenda diaria.
+- Si no hay materiales vencidos, usa selección aleatoria ponderada por Pareto para garantizar conteo diario.
+- No toma materiales con movimiento reciente hasta cumplir días de maduración.
+- La colección que debe revisarse si no aparecen tareas es `countTasks`.
+
+
+## Versión v15 - Conteo diario por Pareto anual
+
+Cambio de lógica principal:
+
+- El conteo general ya no depende principalmente de vencidos.
+- Todos los días debe existir una agenda de conteo.
+- La selección diaria se hace por Pareto aleatorio sin repetición anual.
+- La app evita repetir materiales hasta completar la cobertura anual.
+- Si por operación ya no hay materiales pendientes elegibles, permite repetición controlada por Pareto.
+- Los materiales recién movidos entran en maduración y no se priorizan de inmediato.
+- La meta diaria se calcula con: pendientes del año / días activos restantes hasta 31 de diciembre.
+- El módulo de indicadores mide cobertura anual, cobertura de metraje, meta diaria, diferencias, exactitud y casos abiertos.
+
+## Metraje de cables
+
+- Módulo separado.
+- Se activa por sesiones cada 15 días.
+- Selección aleatoria, sin criticidad.
+- Evita repetir cables hasta cubrir el 100% anual.
+- Excluye cables recién ingresados o cortados hasta cumplir maduración.
+- Calcula cables por sesión con: cables pendientes del año / sesiones restantes hasta 31 de diciembre.

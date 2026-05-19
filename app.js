@@ -42,6 +42,9 @@ const state = {
   settings: structuredClone(defaultSettings),
   driveToken: null,
   driveTokenClient: null,
+  driveTokenExpiresAt: 0,
+  driveAuthPromise: null,
+  syncRunning: false,
   users: [],
   materials: [],
   tasks: [],
@@ -199,6 +202,119 @@ function toISO(value){
   }
   return "";
 }
+
+function currentYear(){
+  return new Date().getFullYear();
+}
+function yearEndISO(year = currentYear()){
+  return `${year}-12-31`;
+}
+function remainingActiveDaysToYearEnd(fromISO = todayISO()){
+  let d = fromISO;
+  let count = 0;
+  let guard = 0;
+  const end = yearEndISO();
+  while(d <= end && guard < 380){
+    if(isActiveCountingDay(d)) count++;
+    d = nextCalendarDay(d);
+    guard++;
+  }
+  return Math.max(1, count);
+}
+function daysBetweenISO(aISO, bISO){
+  const a = parseISO(aISO), b = parseISO(bISO);
+  if(!a || !b) return 9999;
+  return Math.floor((b - a) / 86400000);
+}
+function annualCountedField(){
+  return `annualCounted_${currentYear()}`;
+}
+function annualMeterCountedField(){
+  return `meterCounted_${currentYear()}`;
+}
+function wasCountedThisYear(material){
+  return material[annualCountedField()] === true || String(material.lastCountDate || "").startsWith(String(currentYear()));
+}
+function wasMeterCountedThisYear(material){
+  return material[annualMeterCountedField()] === true || String(material.lastMeterCountDate || "").startsWith(String(currentYear()));
+}
+function isRecentlyMoved(material, maturationDays = Number(state.settings.movementMaturationDays || 3)){
+  const lastMove = material.lastMovementDate || "";
+  if(!lastMove) return false;
+  return daysBetweenISO(lastMove, todayISO()) < maturationDays;
+}
+function isCableMaterial(material){
+  const s = norm([
+    material.ref,
+    material.description,
+    material.category,
+    material.unit
+  ].join(" "));
+  return [
+    "cable", "conductor", "alambre", "thhn", "thw", "awg", "cobre",
+    "aluminio", "calibre", "encauchetado", "duplex", "triplex",
+    "fotovoltaico", "coaxial", "utp", "fibra", "cordon", "cordón"
+  ].some(k => s.includes(norm(k)));
+}
+function annualDailyTarget(totalPending, dailyLimit = Number(state.settings.dailyLimit || 30)){
+  const remaining = remainingActiveDaysToYearEnd();
+  return Math.min(dailyLimit, Math.max(1, Math.ceil(totalPending / remaining)));
+}
+function nextMeterSessionDate(){
+  const start = `${currentYear()}-01-01`;
+  const every = Number(state.settings.cableMeterDays || state.settings.meterModuleDays || 15);
+  let d = start;
+  while(d < todayISO()){
+    d = addActiveDays(d, every);
+  }
+  return d;
+}
+function isMeterSessionOpen(){
+  const every = Number(state.settings.cableMeterDays || state.settings.meterModuleDays || 15);
+  const today = todayISO();
+  const start = `${currentYear()}-01-01`;
+  let d = start;
+  let guard = 0;
+  while(d < today && guard < 400){
+    d = addActiveDays(d, every);
+    guard++;
+  }
+  return d === today;
+}
+function meterSessionsRemaining(){
+  const every = Number(state.settings.cableMeterDays || state.settings.meterModuleDays || 15);
+  let d = todayISO();
+  let count = 0;
+  let guard = 0;
+  const end = yearEndISO();
+  while(d <= end && guard < 400){
+    if(d === todayISO() || isActiveCountingDay(d)) count++;
+    d = addActiveDays(d, every);
+    guard++;
+  }
+  return Math.max(1, count);
+}
+function paretoRandomNoRepeat(materials, seedText, options = {}){
+  const includeWeak = options.includeWeak !== false;
+  const baseSeed = hash(`${seedText}-${currentYear()}`);
+  return [...materials]
+    .map(m => {
+      const random = hash(`${baseSeed}-${m.ref}`) / 4294967295;
+      const pareto = Math.log10(Math.max(Number(m.score || m.inventoryValue || 1), 1));
+      const band = { "A+": 12, "A": 9, "B": 6, "C": 4, "D": 2, "E": 1 }[m.band] || 1;
+      const movement = Math.min(Number(m.movementIndex || 0), 30) / 5;
+      const variability = Math.min(Number(m.variabilityIndex || 0), 100) / 20;
+      const annualGap = wasCountedThisYear(m) ? -100000 : 0;
+      const weakNoise = includeWeak ? random * 100 : 0;
+      return {
+        item: m,
+        rank: annualGap + weakNoise + pareto * 8 + band * 4 + movement + variability
+      };
+    })
+    .sort((a,b) => b.rank - a.rank)
+    .map(x => x.item);
+}
+
 function norm(s){
   return String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]/g,"");
 }
@@ -410,6 +526,7 @@ function setView(viewId){
     auditoriaView:["Auditoría interna","Contabilización independiente e informe."],
     gerenciaView:["Gerencia","Revisión y aprobación final."],
     materialsView:["Materiales","Catálogo consolidado desde SIESA."],
+    indicatorsView:["Indicadores","Cobertura anual, calidad de conteo, diferencias, metraje y productividad."],
     configView:["Configuración","Parámetros de agenda, Pareto y metraje."]
   };
   $("#pageTitle").textContent = titles[viewId]?.[0] || "Panel";
@@ -598,45 +715,154 @@ async function saveSettingsFromUI(){
   renderAll();
 }
 
+
+function renderIndicators(){
+  const cov = $("#coverageIndicators");
+  const qual = $("#qualityIndicators");
+  if(!cov || !qual) return;
+
+  const total = state.materials.filter(m => m.active !== false).length;
+  const counted = state.materials.filter(m => m.active !== false && wasCountedThisYear(m)).length;
+  const pending = Math.max(0, total - counted);
+  const dailyTarget = annualDailyTarget(pending, Number(state.settings.dailyLimit || 30));
+  const cables = state.materials.filter(m => m.active !== false && isCableMaterial(m));
+  const meterDone = cables.filter(wasMeterCountedThisYear).length;
+
+  const diffs = state.counts.filter(c => Number(c.absDiff || 0) > 0);
+  const totalCounts = state.counts.length;
+  const accuracy = totalCounts ? Math.round((totalCounts - diffs.length) / totalCounts * 100) : 0;
+
+  cov.innerHTML = `
+    <div class="summary-item"><span>Materiales activos</span><b>${fmt(total)}</b></div>
+    <div class="summary-item"><span>Contados en el año</span><b>${fmt(counted)}</b></div>
+    <div class="summary-item"><span>Pendientes del año</span><b>${fmt(pending)}</b></div>
+    <div class="summary-item"><span>Meta diaria calculada</span><b>${fmt(dailyTarget)}</b></div>
+    <div class="summary-item"><span>Cobertura anual general</span><b>${total ? Math.round(counted/total*100) : 0}%</b></div>
+    <div class="summary-item"><span>Cables identificados</span><b>${fmt(cables.length)}</b></div>
+    <div class="summary-item"><span>Metrajes hechos en el año</span><b>${fmt(meterDone)}</b></div>
+    <div class="summary-item"><span>Cobertura anual metraje</span><b>${cables.length ? Math.round(meterDone/cables.length*100) : 0}%</b></div>
+  `;
+
+  qual.innerHTML = `
+    <div class="summary-item"><span>Conteos registrados recientes</span><b>${fmt(totalCounts)}</b></div>
+    <div class="summary-item"><span>Conteos con diferencia</span><b>${fmt(diffs.length)}</b></div>
+    <div class="summary-item"><span>Exactitud reciente</span><b>${accuracy}%</b></div>
+    <div class="summary-item"><span>Casos abiertos</span><b>${fmt(state.cases.length)}</b></div>
+    <div class="summary-item"><span>Jefe logístico pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("jefe")).length)}</b></div>
+    <div class="summary-item"><span>Auditoría pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("auditoria")).length)}</b></div>
+    <div class="summary-item"><span>Gerencia pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("gerencia")).length)}</b></div>
+  `;
+}
+
 function renderDriveConfig(){
   $("#cfgDriveClient").value = driveConfig.clientId;
   $("#cfgDriveFolder").value = driveConfig.folderId;
   $("#cfgDriveFile").value = driveConfig.fileName;
   $("#cfgDriveSheet").value = driveConfig.sheetName;
 }
+function isDriveTokenUsable(){
+  return Boolean(
+    state.driveToken &&
+    state.driveTokenExpiresAt &&
+    Date.now() < state.driveTokenExpiresAt - 90000
+  );
+}
+function markDriveDisconnected(message = "Drive no conectado"){
+  state.driveToken = null;
+  state.driveTokenExpiresAt = 0;
+  const badge = $("#driveState");
+  if(badge){
+    badge.textContent = message;
+    badge.className = "tag red";
+  }
+}
 function connectDrive(interactive = true){
-  return new Promise((resolve, reject) => {
-    if(!window.google?.accounts?.oauth2){ reject(new Error("Google Identity Services aún no cargó.")); return; }
+  if(!interactive){
+    return Promise.reject(new Error("Drive no está conectado. La sincronización automática no puede abrir ventanas; primero presiona Conectar Drive manualmente."));
+  }
+  if(state.driveAuthPromise) return state.driveAuthPromise;
+
+  state.driveAuthPromise = new Promise((resolve, reject) => {
+    if(!window.google?.accounts?.oauth2){
+      state.driveAuthPromise = null;
+      reject(new Error("Google Identity Services aún no cargó. Espera unos segundos y vuelve a presionar Conectar Drive."));
+      return;
+    }
+
+    const requestedScopes = driveConfig.scopes.split(/\s+/).filter(Boolean);
+
     state.driveTokenClient = google.accounts.oauth2.initTokenClient({
       client_id: driveConfig.clientId,
       scope: driveConfig.scopes,
-      prompt: interactive ? "consent" : "",
       callback: tokenResponse => {
-        if(tokenResponse?.access_token){
-          state.driveToken = tokenResponse.access_token;
-          $("#driveState").textContent = "Conectado";
-          $("#driveState").className = "tag green";
-          if(interactive) toast("Google Drive conectado.");
-          resolve(state.driveToken);
-        }else reject(new Error("No se recibió token de Drive."));
+        state.driveAuthPromise = null;
+
+        if(tokenResponse?.error){
+          markDriveDisconnected("Drive no conectado");
+          reject(new Error(`Google no autorizó Drive: ${tokenResponse.error}`));
+          return;
+        }
+
+        if(!tokenResponse?.access_token || String(tokenResponse.access_token).length < 30){
+          markDriveDisconnected("Token inválido");
+          reject(new Error("No se recibió un token válido de Drive. Permite la ventana emergente y vuelve a conectar."));
+          return;
+        }
+
+        const allScopesGranted = window.google?.accounts?.oauth2?.hasGrantedAllScopes
+          ? google.accounts.oauth2.hasGrantedAllScopes(tokenResponse, ...requestedScopes)
+          : true;
+
+        if(!allScopesGranted){
+          markDriveDisconnected("Permisos incompletos");
+          reject(new Error("No autorizaste todos los permisos de Drive. Debes aceptar drive.metadata.readonly y drive.readonly."));
+          return;
+        }
+
+        state.driveToken = tokenResponse.access_token;
+        state.driveTokenExpiresAt = Date.now() + Number(tokenResponse.expires_in || 3300) * 1000;
+
+        $("#driveState").textContent = "Conectado";
+        $("#driveState").className = "tag green";
+        logSync("Token de Drive recibido y validado. Ya puedes sincronizar SIESA.");
+        toast("Google Drive conectado correctamente.");
+        resolve(state.driveToken);
+      },
+      error_callback: err => {
+        state.driveAuthPromise = null;
+        markDriveDisconnected("Popup bloqueado");
+        reject(new Error("Google no pudo abrir la ventana de autorización. Habilita popups para jeptac.github.io y vuelve a intentar."));
       }
     });
-    state.driveTokenClient.requestAccessToken({ prompt: interactive ? "consent" : "" });
+
+    state.driveTokenClient.requestAccessToken({ prompt: "consent" });
   });
+
+  return state.driveAuthPromise;
 }
 async function ensureDriveToken(silent = false){
-  if(state.driveToken) return state.driveToken;
+  if(isDriveTokenUsable()) return state.driveToken;
+
+  markDriveDisconnected("Drive requiere conexión");
+
   if(silent){
-    throw new Error("Drive no está conectado. La sincronización automática no puede abrir ventanas; primero presiona Conectar Drive manualmente.");
+    throw new Error("Drive no está conectado o el token venció. La sincronización automática no puede abrir ventanas; primero presiona Conectar Drive manualmente.");
   }
+
   return await connectDrive(true);
 }
 
 async function syncFromDrive(silent = false){
   if(!hasAny(["jefe_logistico"])) return toast("Solo super admin o jefe logístico pueden sincronizar SIESA.", "error");
+  if(state.syncRunning){
+    if(!silent) toast("Ya hay una sincronización en curso. Espera a que termine.");
+    return;
+  }
+  state.syncRunning = true;
   try{
     logSync("Iniciando lectura de Drive...");
     const token = await ensureDriveToken(silent);
+    logSync("Token Drive disponible. Buscando archivo Excel en la carpeta configurada...");
     const file = await findDriveFile(token);
     logSync(`Archivo encontrado: ${file.name} · ${file.modifiedTime}`);
 
@@ -676,33 +902,75 @@ async function syncFromDrive(silent = false){
     if(!silent) toast("Sincronización SIESA completada y tareas obligatorias verificadas.");
   }catch(err){
     console.error(err);
-    logSync("ERROR: " + (err.message || err));
-    if(!silent) toast(err.message || "Error sincronizando SIESA", "error");
+    const msg = err.message || String(err);
+    if(msg.includes("TOKEN_DRIVE_INVALIDO")){
+      markDriveDisconnected("Token vencido");
+      logSync("ERROR: la autorización de Drive venció o quedó inválida. Presiona Conectar Drive y luego Sincronizar SIESA.");
+      if(!silent) toast("La autorización de Drive venció. Presiona Conectar Drive nuevamente y luego Sincronizar SIESA.", "error");
+    }else{
+      logSync("ERROR: " + msg);
+      if(!silent) toast(msg || "Error sincronizando SIESA", "error");
+    }
     if(silent) throw err;
+  }finally{
+    state.syncRunning = false;
   }
 }
 
 async function ensureMandatoryDailyWork(showToast = true){
   await loadMaterials();
-  await loadTasks();
-  await generateGeneralTasks(false);
-  await loadTasks();
-  await generateCableTasks(false);
+  if(!state.materials.length){
+    logSync("Agenda diaria no generada: no hay materiales en Firestore. Primero debe leerse correctamente el Excel SIESA.");
+    if(showToast) toast("No hay materiales cargados. Primero sincroniza el Excel SIESA desde Drive.", "error");
+    return;
+  }
+
+  await forceMandatoryDailyTasks(false);
+
+  if(isMeterSessionOpen()){
+    await forceCableMeterTasks(false);
+  }else{
+    logSync(`Metraje no corresponde hoy. Próxima sesión: ${nextMeterSessionDate()}.`);
+  }
+
   await loadTasks();
   if(showToast) toast("Agenda obligatoria del día verificada.");
 }
 
 async function findDriveFile(token){
+  if(!token || String(token).length < 30){
+    markDriveDisconnected("Token inválido");
+    throw new Error("TOKEN_DRIVE_INVALIDO: la app no tiene un token OAuth válido para consultar Drive.");
+  }
+
   const qParts = [`name='${driveConfig.fileName.replace(/'/g,"\\'")}'`, `'${driveConfig.folderId}' in parents`, "trashed=false"];
   const params = new URLSearchParams({ q:qParts.join(" and "), orderBy:"modifiedTime desc", pageSize:"1", fields:"files(id,name,mimeType,modifiedTime,size,webViewLink)" });
   const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, { headers:{ Authorization:`Bearer ${token}` } });
+
+  if(res.status === 401){
+    markDriveDisconnected("Token vencido");
+    throw new Error(`TOKEN_DRIVE_INVALIDO: Drive rechazó la autorización. Detalle: ${await res.text()}`);
+  }
+
   if(!res.ok) throw new Error(`Drive no permitió buscar el archivo: ${res.status} ${await res.text()}`);
+
   const data = await res.json();
   if(!data.files?.length) throw new Error(`No se encontró ${driveConfig.fileName} en la carpeta configurada.`);
   return data.files[0];
 }
 async function downloadDriveFile(fileId, token){
+  if(!token || String(token).length < 30){
+    markDriveDisconnected("Token inválido");
+    throw new Error("TOKEN_DRIVE_INVALIDO: la app no tiene un token OAuth válido para descargar Drive.");
+  }
+
   const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers:{ Authorization:`Bearer ${token}` } });
+
+  if(res.status === 401){
+    markDriveDisconnected("Token vencido");
+    throw new Error(`TOKEN_DRIVE_INVALIDO: Drive rechazó la descarga por token vencido o inválido. Detalle: ${await res.text()}`);
+  }
+
   if(!res.ok) throw new Error(`No se pudo descargar el Excel: ${res.status} ${await res.text()}`);
   return await res.arrayBuffer();
 }
@@ -900,7 +1168,11 @@ async function generateGeneralTasks(showToast = true){
     }
   }
 
-  if(!selected.length){ if(showToast) toast("No hay materiales disponibles para generar tareas generales."); return; }
+  if(!selected.length){
+    logSync("No hay materiales disponibles para tareas generales. Posibles causas: todos tienen tarea abierta o están bloqueados por movimiento reciente.");
+    if(showToast) toast("No hay materiales disponibles para generar tareas generales.", "error");
+    return;
+  }
 
   await batchSet("countTasks", selected.map(({material:m, forced}) => ({
     id:`TASK-${today}-${forced ? "FORZ" : "DUE"}-${safeId(m.ref)}`,
@@ -1026,6 +1298,105 @@ function openCaseCountDialog(caseId, mode){
   $("#countDialogSubtitle").textContent = `${c.materialRef} · ${c.description || ""}`;
   $("#countDialog").showModal();
 }
+
+async function forceMandatoryDailyTasks(showToast = true){
+  if(!hasAny(["jefe_logistico"])){
+    if(showToast) toast("Solo super admin o jefe logístico pueden crear tareas obligatorias.", "error");
+    return;
+  }
+
+  const today = todayISO();
+  await loadMaterials();
+  await loadTasks();
+
+  if(!state.materials.length){
+    logSync("No se pueden crear tareas: Firestore no tiene materiales. Sincroniza primero Excel_siesa.xls.");
+    if(showToast) toast("No hay materiales en Firestore. Primero sincroniza el Excel SIESA.", "error");
+    return;
+  }
+
+  const openRefs = new Set(
+    state.tasks
+      .filter(t => ["assigned","pending_inventory","recount_required","pending_jefe_approval","pending_jefe_logistico"].includes(t.status))
+      .map(t => t.materialRef)
+  );
+
+  const openToday = state.tasks.filter(t =>
+    ["assigned","pending_inventory","recount_required"].includes(t.status)
+    && (t.scheduledDate || "") <= today
+  ).length;
+
+  const yearlyPending = state.materials
+    .filter(m => m.active !== false)
+    .filter(m => !wasCountedThisYear(m))
+    .length;
+
+  const suggestedTarget = annualDailyTarget(yearlyPending, Number(state.settings.dailyLimit || 30));
+  const dailyTarget = Math.max(1, Math.min(Number(state.settings.dailyLimit || 30), suggestedTarget));
+  const room = Math.max(0, dailyTarget - openToday);
+
+  if(room <= 0){
+    logSync(`Agenda general cubierta: ${openToday}/${dailyTarget} tareas abiertas. Pendientes año: ${yearlyPending}.`);
+    if(showToast) toast("La agenda general del día ya está cubierta.");
+    return;
+  }
+
+  let eligible = state.materials
+    .filter(m => m.active !== false)
+    .filter(m => !openRefs.has(m.ref))
+    .filter(m => !wasCountedThisYear(m))
+    .filter(m => !isRecentlyMoved(m));
+
+  if(!eligible.length){
+    logSync("Todos los materiales aptos ya fueron contados en el año o están en maduración. Se habilitará repetición controlada por Pareto si es necesario.");
+    eligible = state.materials
+      .filter(m => m.active !== false)
+      .filter(m => !openRefs.has(m.ref))
+      .filter(m => !isRecentlyMoved(m));
+  }
+
+  const selected = paretoRandomNoRepeat(eligible, today, { includeWeak: true }).slice(0, room);
+
+  if(!selected.length){
+    logSync("No se crearon tareas generales: no hay materiales elegibles.");
+    if(showToast) toast("No hay materiales elegibles para conteo general.", "error");
+    return;
+  }
+
+  const tasks = selected.map((m, idx) => ({
+    id: `DAY-${today}-${safeId(m.ref)}`,
+    data: makeTask(m, {
+      scheduledDate: today,
+      type: wasCountedThisYear(m) ? "repeticion_controlada_pareto" : "conteo_diario_pareto",
+      status: "assigned",
+      priority: 100000 - idx,
+      origin: "annual_pareto_no_repeat"
+    })
+  }));
+
+  await batchSet("countTasks", tasks);
+
+  logSync(`Conteo general diario creado: ${tasks.length}. Pendientes año antes de crear: ${yearlyPending}. Meta diaria calculada: ${dailyTarget}. Modo: Pareto aleatorio sin repetición.`);
+  if(showToast) toast(`Conteo general diario creado: ${tasks.length}`);
+}
+
+function weightedParetoShuffle(materials, seedText){
+  const seed = hash(seedText);
+  return [...materials]
+    .map(m => {
+      const randomPart = hash(`${seed}-${m.ref}`) / 4294967295;
+      const scorePart = Math.log10(Math.max(Number(m.score || 0), 1));
+      const bandBonus = { "A+": 8, "A": 6, "B": 4, "C": 3, "D": 2, "E": 1 }[m.band] || 1;
+      return {
+        item: m,
+        rank: randomPart * 100 + scorePart * 7 + bandBonus * 3
+      };
+    })
+    .sort((a,b) => b.rank - a.rank)
+    .map(x => x.item);
+}
+
+
 async function saveCount(e){
   e.preventDefault();
   const mode = $("#countMode").value;
@@ -1174,3 +1545,78 @@ function scheduleAutoSyncChecker(){
 }
 
 init();
+async function forceCableMeterTasks(showToast = true){
+  if(!hasAny(["jefe_logistico"])){
+    if(showToast) toast("Solo super admin o jefe logístico pueden generar metrajes.", "error");
+    return;
+  }
+
+  const today = todayISO();
+  await loadMaterials();
+
+  if(!state.materials.length){
+    if(showToast) toast("No hay materiales para generar metraje. Primero sincroniza SIESA.", "error");
+    return;
+  }
+
+  if(!isMeterSessionOpen()){
+    const next = nextMeterSessionDate();
+    logSync(`Módulo de metraje bloqueado hoy. Próxima sesión: ${next}.`);
+    if(showToast) toast(`Metraje bloqueado. Próxima sesión: ${next}`);
+    return;
+  }
+
+  const openSnap = await getDocs(query(collection(db, "cableMeterTasks"), where("status", "in", ["assigned","pending_meter_count"]), limit(1000)));
+  const openRefs = new Set(openSnap.docs.map(d => d.data().materialRef));
+
+  const cables = state.materials
+    .filter(m => m.active !== false)
+    .filter(isCableMaterial);
+
+  const pendingYear = cables.filter(m => !wasMeterCountedThisYear(m));
+  const sessions = meterSessionsRemaining();
+  const target = Math.max(1, Math.ceil(pendingYear.length / sessions));
+
+  let eligible = pendingYear
+    .filter(m => !openRefs.has(m.ref))
+    .filter(m => {
+      const maturation = Number(state.settings.cableMeterMaturationDays || state.settings.meterMaturationDays || 15);
+      const lastMove = m.lastMovementDate || "";
+      return !lastMove || daysBetweenISO(lastMove, today) >= maturation;
+    });
+
+  if(!eligible.length){
+    logSync("No hay cables maduros pendientes de metraje. Se mantiene el módulo pendiente para próxima sesión.");
+    if(showToast) toast("No hay cables maduros pendientes de metraje.", "error");
+    return;
+  }
+
+  const selected = paretoRandomNoRepeat(eligible, `METER-${today}`, { includeWeak: true })
+    .sort((a,b) => hash(`${today}-meter-${b.ref}`) - hash(`${today}-meter-${a.ref}`))
+    .slice(0, target);
+
+  const tasks = selected.map((m, idx) => ({
+    id: `METER-${today}-${safeId(m.ref)}`,
+    data: {
+      materialRef: m.ref,
+      materialId: m.id || safeId(m.ref),
+      description: m.description || "",
+      location: m.location || "",
+      systemQty: Number(m.stockSystem || 0),
+      unit: m.unit || "",
+      scheduledDate: today,
+      status: "assigned",
+      type: "metraje_cable_aleatorio_15d",
+      priority: 100000 - idx,
+      createdAt: nowTimestamp(),
+      createdByUid: state.user?.uid || "",
+      createdByEmail: state.user?.email || ""
+    }
+  }));
+
+  await batchSet("cableMeterTasks", tasks);
+  logSync(`Metraje de cables generado: ${tasks.length}. Pendientes año: ${pendingYear.length}. Sesiones restantes: ${sessions}. Selección aleatoria sin criticidad.`);
+  if(showToast) toast(`Metraje de cables generado: ${tasks.length}`);
+}
+
+

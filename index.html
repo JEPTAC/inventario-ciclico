@@ -39,6 +39,7 @@
         <button class="nav-link" data-view="auditoriaView" data-roles="super_admin,auditoria">Auditoría</button>
         <button class="nav-link" data-view="gerenciaView" data-roles="super_admin,gerencia">Gerencia</button>
         <button class="nav-link" data-view="materialsView">Materiales</button>
+        <button class="nav-link" data-view="indicatorsView">Indicadores</button>
         <button class="nav-link" data-view="configView" data-roles="super_admin,jefe_logistico">Configuración</button>
       </nav>
       <button id="logoutBtn" class="btn ghost full">Cerrar sesión</button>
@@ -102,6 +103,25 @@
       <section id="auditoriaView" class="view"><article class="card"><div class="card-head"><div><h3>Panel auditoría interna</h3><p>Contabiliza de forma independiente, agrega comentarios por referencia y envía informe a gerencia.</p></div><span class="tag red">Auditoría</span></div><div id="auditCasesTable"></div></article></section>
       <section id="gerenciaView" class="view"><article class="card"><div class="card-head"><div><h3>Panel gerencia</h3><p>Revisa el informe, aprueba cierre o autoriza ajuste.</p></div><span class="tag dark">Gerencia</span></div><div id="gerenciaCasesTable"></div></article></section>
       <section id="materialsView" class="view"><article class="card"><div class="card-head"><div><h3>Materiales consolidados</h3><p>Base SIESA, Pareto, movimiento y metraje de cables.</p></div><div class="filters"><input id="materialSearch" placeholder="Buscar material"><select id="materialBandFilter"><option value="">Todas las bandas</option><option>A+</option><option>A</option><option>B</option><option>C</option><option>D</option><option>E</option></select><select id="materialCableFilter"><option value="">Todos</option><option value="cable">Solo cables</option></select></div></div><div id="materialsTable"></div></article></section>
+      <section id="indicatorsView" class="view">
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head">
+              <h3>Indicadores de cobertura</h3>
+              <span class="tag green">Anual</span>
+            </div>
+            <div id="coverageIndicators" class="summary-list"></div>
+          </article>
+          <article class="card">
+            <div class="card-head">
+              <h3>Indicadores de calidad</h3>
+              <span class="tag yellow">Diferencias</span>
+            </div>
+            <div id="qualityIndicators" class="summary-list"></div>
+          </article>
+        </div>
+      </section>
+
       <section id="configView" class="view"><div class="grid two"><article class="card"><div class="card-head"><h3>Parámetros</h3><button id="saveSettingsBtn" class="btn primary">Guardar</button></div><div class="config-grid"><label>Límite diario general<input id="setDailyLimit" type="number" min="1" max="80"></label><label>Días activos<input id="setActiveDays" placeholder="1,2,3,4,5"></label><label>Hora auto sync<input id="setAutoHour" type="number" min="0" max="23"></label><label>Hoja Excel<input id="setSheetName"></label><label>Periodo metraje cables<input id="setCablePeriod" type="number" min="1"></label><label>Maduración cable reciente<input id="setCableCooldown" type="number" min="0"></label><label>Límite por sesión cables<input id="setCableLimit" type="number" min="0"></label></div><div id="bandsEditor" class="bands-editor"></div></article><article class="card"><h3>Reglas activas</h3><div class="summary-list"><div class="summary-item"><span>Frecuencias ABC</span><b>10/20/30/60/90/120</b></div><div class="summary-item"><span>Conteo diario</span><b>máximo configurable</b></div><div class="summary-item"><span>Metraje cables</span><b>módulo separado cada 15 días</b></div><div class="summary-item"><span>Selección metraje</span><b>aleatoria, sin criticidad</b></div><div class="summary-item"><span>Meta metraje</span><b>100% al 31 de diciembre</b></div><div class="summary-item"><span>Usuario con todos los módulos</span><b>super_admin</b></div></div></article></div></section>
     </section>
   </div>
