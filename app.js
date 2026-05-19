@@ -626,7 +626,10 @@ function connectDrive(interactive = true){
 }
 async function ensureDriveToken(silent = false){
   if(state.driveToken) return state.driveToken;
-  return await connectDrive(!silent);
+  if(silent){
+    throw new Error("Drive no está conectado. La sincronización automática no puede abrir ventanas; primero presiona Conectar Drive manualmente.");
+  }
+  return await connectDrive(true);
 }
 
 async function syncFromDrive(silent = false){
@@ -636,22 +639,41 @@ async function syncFromDrive(silent = false){
     const token = await ensureDriveToken(silent);
     const file = await findDriveFile(token);
     logSync(`Archivo encontrado: ${file.name} · ${file.modifiedTime}`);
+
     const stateRef = doc(db, "syncState", "drive");
     const lastSnap = await getDoc(stateRef);
-    if(lastSnap.exists() && lastSnap.data().lastFileModifiedTime === file.modifiedTime){
-      logSync("El archivo no cambió desde la última sincronización.");
+    const lastData = lastSnap.exists() ? lastSnap.data() : {};
+
+    if(lastData.lastFileModifiedTime === file.modifiedTime){
+      logSync("El Excel no cambió desde la última sincronización. Se verifica agenda diaria y metraje.");
       await setDoc(stateRef, { lastAutoCheckDate: todayISO(), updatedAt: nowTS() }, { merge:true });
-      if(!silent) toast("El Excel no cambió. No se reprocesó.");
+      await ensureMandatoryDailyWork(false);
+      await refreshAll();
+      if(!silent) toast("Excel sin cambios. La app verificó y completó las tareas obligatorias del día.");
       return;
     }
+
     const buffer = await downloadDriveFile(file.id, token);
+    logSync(`Archivo descargado correctamente. Tamaño aproximado: ${Math.round(buffer.byteLength/1024)} KB.`);
+
     const rows = parseExcel(buffer);
+    logSync(`Hoja leída correctamente. Filas detectadas: ${rows.length}.`);
+
     const materials = rows.map(normalizeMaterial).filter(Boolean);
-    if(!materials.length) throw new Error("No se detectaron materiales válidos en el Excel.");
+    logSync(`Materiales válidos normalizados: ${materials.length}.`);
+    if(!materials.length) throw new Error("No se detectaron materiales válidos en el Excel. Revisa encabezados de referencia, existencia/stock y costo.");
+
     await processSiesaMaterials(materials, file, rows.length);
-    await setDoc(stateRef, { lastFileId:file.id, lastFileModifiedTime:file.modifiedTime, lastSyncDate:todayISO(), lastAutoSyncDate:silent ? todayISO() : (lastSnap.data()?.lastAutoSyncDate || ""), updatedAt:nowTS() }, { merge:true });
+    await setDoc(stateRef, {
+      lastFileId:file.id,
+      lastFileModifiedTime:file.modifiedTime,
+      lastSyncDate:todayISO(),
+      lastAutoSyncDate:silent ? todayISO() : (lastData.lastAutoSyncDate || ""),
+      updatedAt:nowTS()
+    }, { merge:true });
     await refreshAll();
-    if(!silent) toast("Sincronización SIESA completada.");
+    logSync("Sincronización finalizada: materiales, agenda diaria y metraje verificados.");
+    if(!silent) toast("Sincronización SIESA completada y tareas obligatorias verificadas.");
   }catch(err){
     console.error(err);
     logSync("ERROR: " + (err.message || err));
@@ -659,6 +681,17 @@ async function syncFromDrive(silent = false){
     if(silent) throw err;
   }
 }
+
+async function ensureMandatoryDailyWork(showToast = true){
+  await loadMaterials();
+  await loadTasks();
+  await generateGeneralTasks(false);
+  await loadTasks();
+  await generateCableTasks(false);
+  await loadTasks();
+  if(showToast) toast("Agenda obligatoria del día verificada.");
+}
+
 async function findDriveFile(token){
   const qParts = [`name='${driveConfig.fileName.replace(/'/g,"\\'")}'`, `'${driveConfig.folderId}' in parents`, "trashed=false"];
   const params = new URLSearchParams({ q:qParts.join(" and "), orderBy:"modifiedTime desc", pageSize:"1", fields:"files(id,name,mimeType,modifiedTime,size,webViewLink)" });
@@ -746,9 +779,13 @@ async function processSiesaMaterials(incoming, file, rowsRead){
     };
   });
   await batchSet("materials", finalMaterials.map(m => ({ id:m.id || safeId(m.ref), data:compactMaterial(m) })));
+  state.materials = finalMaterials;
+  await loadTasks();
   const logRef = await addDoc(collection(db, "syncLogs"), { fileId:file.id, fileName:file.name, fileModifiedTime:file.modifiedTime, rowsRead, materialsProcessed:finalMaterials.length, firstSync, createdAt:nowTS(), createdByUid:state.user.uid, createdByEmail:state.user.email });
   if(firstSync) await createInitialSampleTasks(finalMaterials, logRef.id);
+  await loadTasks();
   await generateGeneralTasks(false);
+  await loadTasks();
   await generateCableTasks(false);
 }
 function assignPareto(materials){
@@ -775,26 +812,105 @@ function makeTask(m, extra = {}){
   return { materialRef:m.ref, materialId:m.id || safeId(m.ref), description:m.description || "", location:m.location || "", band:m.band || "", frequency:Number(m.frequency || 120), systemQty:Number(m.stockSystem || 0), scheduledDate:extra.scheduledDate || todayISO(), taskType:extra.taskType || "general", status:extra.status || "assigned", priority:Number(extra.priority || taskPriority(m)), recountRound:Number(extra.recountRound || 0), origin:extra.origin || "agenda", syncLogId:extra.syncLogId || "", createdAt:nowTS(), createdByUid:state.user?.uid || "", createdByEmail:state.user?.email || "" };
 }
 async function createInitialSampleTasks(materials, syncLogId){
-  const today = todayISO(), selected = [], seen = new Set(), sorted = [...materials].sort((a,b) => (b.score || 0) - (a.score || 0));
-  for(const band of state.settings.bands){ const item = sorted.find(m => m.band === band.key && !seen.has(m.ref)); if(item){ selected.push(item); seen.add(item.ref); } }
-  const cats = [...new Set(sorted.map(m => m.category).filter(Boolean))];
-  for(const cat of cats){ if(selected.length >= Number(state.settings.firstSampleLimit || 30)) break; const item = sorted.find(m => m.category === cat && !seen.has(m.ref)); if(item){ selected.push(item); seen.add(item.ref); } }
-  for(const item of sorted){ if(selected.length >= Number(state.settings.firstSampleLimit || 30)) break; if(!seen.has(item.ref)){ selected.push(item); seen.add(item.ref); } }
-  await batchSet("countTasks", selected.map((m, idx) => ({ id:`INIT-${today}-${safeId(m.ref)}`, data:makeTask(m,{ scheduledDate:today, taskType:"initial_sample", status:"assigned", priority:100000-idx, origin:"initial_sample", syncLogId }) })));
+  const today = todayISO();
+  const limitDaily = Math.max(1, Number(state.settings.dailyLimit || state.settings.firstSampleLimit || 30));
+  const openSnap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned","recount_required","pending_inventory","pending_jefe_approval"]), limit(900)));
+  const openRefs = new Set(openSnap.docs.map(d => d.data().materialRef));
+  const seed = `MUESTRA_INICIAL-${today}-${syncLogId || "base"}`;
+
+  const candidates = [...materials]
+    .filter(m => m.active !== false && !openRefs.has(m.ref))
+    .map(m => {
+      const score = Math.max(Number(m.score || 0), 1);
+      const bandWeight = {"A+":7,A:6,B:5,C:3,D:2,E:1}[m.band] || 1;
+      const random = seededRandomScore(`${seed}-${m.ref}`);
+      return {
+        ...m,
+        initialRandomScore: (random + 0.05) / (Math.log10(score + 10) * bandWeight)
+      };
+    })
+    .sort((a,b) => a.initialRandomScore - b.initialRandomScore);
+
+  const selected = [];
+  const seen = new Set();
+
+  for(const band of state.settings.bands){
+    const item = candidates.find(m => m.band === band.key && !seen.has(m.ref));
+    if(item){ selected.push(item); seen.add(item.ref); }
+  }
+
+  for(const item of candidates){
+    if(selected.length >= limitDaily) break;
+    if(!seen.has(item.ref)){ selected.push(item); seen.add(item.ref); }
+  }
+
+  if(!selected.length){
+    logSync("No fue posible crear muestra inicial: no hay materiales disponibles.");
+    return;
+  }
+
+  await batchSet("countTasks", selected.map((m, idx) => ({
+    id:`INIT-${today}-${safeId(m.ref)}`,
+    data:makeTask(m,{ scheduledDate:today, taskType:"initial_sample", status:"assigned", priority:120000-idx, origin:"initial_random_pareto", syncLogId })
+  })));
+  logSync(`Muestra inicial obligatoria creada: ${selected.length} referencias para contar hoy.`);
 }
+
 async function generateGeneralTasks(showToast = true){
   if(!hasAny(["jefe_logistico"])) { if(showToast) toast("Solo super admin o jefe logístico pueden generar tareas.", "error"); return; }
   const today = todayISO();
-  const openSnap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned","recount_required","pending_inventory"]), limit(900)));
-  const openRefs = new Set(openSnap.docs.filter(d => (d.data().taskType || "general") !== "cable_metraje").map(d => d.data().materialRef));
-  const openToday = openSnap.docs.filter(d => (d.data().taskType || "general") !== "cable_metraje" && (d.data().scheduledDate || "") <= today).length;
+  const openSnap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned","recount_required","pending_inventory","pending_jefe_approval"]), limit(900)));
+  const openDocs = openSnap.docs.map(d => ({ id:d.id, ...d.data() }));
+  const openRefs = new Set(openDocs.filter(t => (t.taskType || "general") !== "cable_metraje").map(t => t.materialRef));
+  const openToday = openDocs.filter(t => (t.taskType || "general") !== "cable_metraje" && (t.scheduledDate || "") <= today).length;
   const room = Math.max(0, Number(state.settings.dailyLimit || 30) - openToday);
   if(room <= 0){ if(showToast) toast("La capacidad diaria general ya está cubierta."); return; }
-  const mats = state.materials.filter(m => m.active !== false && !openRefs.has(m.ref) && (m.nextDueDate || "9999-12-31") <= today).sort((a,b) => taskPriority(b) - taskPriority(a)).slice(0, room);
-  if(!mats.length){ if(showToast) toast("No hay materiales vencidos para conteo general."); return; }
-  await batchSet("countTasks", mats.map(m => ({ id:`TASK-${today}-${safeId(m.ref)}`, data:makeTask(m,{ scheduledDate:today, taskType:"general", status:"assigned" }) })));
-  if(showToast){ toast(`Tareas generales generadas: ${mats.length}`); await refreshAll(); }
+
+  const base = state.materials.filter(m => m.active !== false && !openRefs.has(m.ref));
+  const due = base
+    .filter(m => (m.nextDueDate || "9999-12-31") <= today)
+    .sort((a,b) => taskPriority(b) - taskPriority(a));
+
+  const selected = [];
+  const selectedRefs = new Set();
+  for(const m of due){
+    if(selected.length >= room) break;
+    selected.push({ material:m, forced:false });
+    selectedRefs.add(m.ref);
+  }
+
+  if(selected.length < room){
+    const seed = `GARANTIA_DIARIA-${today}`;
+    const filler = base
+      .filter(m => !selectedRefs.has(m.ref))
+      .filter(m => !(m.lastMovementDate === today && !m.lastCountDate))
+      .map(m => {
+        const neverCounted = m.lastCountDate ? 0 : 50000;
+        const closeDue = Math.max(0, 365 - Math.max(0, diffDays(today, m.nextDueDate || today)));
+        const bandWeight = {"A+":6000,A:5000,B:4000,C:2500,D:1500,E:800}[m.band] || 500;
+        const random = seededRandomScore(`${seed}-${m.ref}`) * 500;
+        return { ...m, guaranteePriority: neverCounted + closeDue + bandWeight + Math.min(Number(m.score || 0)/100000, 800) + random };
+      })
+      .sort((a,b) => b.guaranteePriority - a.guaranteePriority);
+
+    for(const m of filler){
+      if(selected.length >= room) break;
+      selected.push({ material:m, forced:true });
+      selectedRefs.add(m.ref);
+    }
+  }
+
+  if(!selected.length){ if(showToast) toast("No hay materiales disponibles para generar tareas generales."); return; }
+
+  await batchSet("countTasks", selected.map(({material:m, forced}) => ({
+    id:`TASK-${today}-${forced ? "FORZ" : "DUE"}-${safeId(m.ref)}`,
+    data:makeTask(m,{ scheduledDate:today, taskType:forced ? "garantia_diaria" : "general", status:"assigned", origin:forced ? "daily_mandatory_fill" : "agenda_due" })
+  })));
+
+  logSync(`Tareas generales verificadas: ${selected.length} generadas (${selected.filter(x => x.forced).length} por garantía diaria).`);
+  if(showToast){ toast(`Tareas generales generadas: ${selected.length}`); await refreshAll(); }
 }
+
 async function generateCableTasks(showToast = true){
   if(!hasAny(["jefe_logistico"])) { if(showToast) toast("Solo super admin o jefe logístico pueden generar metraje.", "error"); return; }
   const today = todayISO();
@@ -831,8 +947,9 @@ async function generateCableTasks(showToast = true){
 
   if(!cables.length){
     const immature = uncountedThisYear.length - eligible.length;
+    logSync(`Metraje: no se generaron cables. Total cables: ${allCables.length}, pendientes año: ${uncountedThisYear.length}, elegibles maduros: ${eligible.length}, inmaduros/bloqueados: ${Math.max(0, immature)}.`);
     if(showToast) toast(`No hay cables maduros para esta sesión. Pendientes inmaduros o bloqueados: ${fmt(Math.max(0, immature))}.`);
-    await setDoc(stateRef, { lastSessionDate: today, nextSessionDate: addDays(today, Number(state.settings.cablePeriodDays || 15)), updatedAt: nowTS(), updatedByUid: state.user.uid, updatedByEmail: state.user.email }, { merge:true });
+    await setDoc(stateRef, { pendingSessionDate: today, nextSessionDate: today, blockedReason:"sin_cables_maduros", updatedAt: nowTS(), updatedByUid: state.user.uid, updatedByEmail: state.user.email }, { merge:true });
     return;
   }
 
@@ -867,6 +984,7 @@ async function generateCableTasks(showToast = true){
     createdByEmail: state.user.email
   });
 
+  logSync(`Metraje: sesión aleatoria generada con ${cables.length} cables. Pendientes del año después de sesión: ${Math.max(0, uncountedThisYear.length - cables.length)}.`);
   if(showToast){ toast(`Sesión aleatoria de metraje generada: ${cables.length} cables.`); await refreshAll(); }
 }
 
@@ -1043,10 +1161,13 @@ function scheduleAutoSyncChecker(){
     const snap = await getDoc(ref);
     if(snap.exists() && snap.data().lastAutoSyncDate === todayISO()) return;
     try{
-      logSync("Auto sync 8:00 a.m.: intentando sincronización silenciosa...");
+      logSync("Auto sync 8:00 a.m.: verificando. Si Drive no está conectado, no se abrirá ventana automática.");
       await syncFromDrive(true);
       await setDoc(ref, { lastAutoSyncDate:todayISO(), updatedAt:nowTS() }, { merge:true });
-    }catch(err){ logSync("Auto sync pendiente: requiere conectar Drive manualmente."); }
+    }catch(err){
+      logSync("Auto sync pendiente: primero presiona Conectar Drive. Motivo: " + (err.message || err));
+      await ensureMandatoryDailyWork(false).catch(() => {});
+    }
   };
   setTimeout(check, 2500);
   state.autoTimer = setInterval(check, 5 * 60 * 1000);

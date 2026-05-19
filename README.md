@@ -1,4 +1,4 @@
-# Inventario Cíclico SIESA - Firebase + Drive v11
+# Inventario Cíclico SIESA - Firebase + Drive v12
 
 Aplicación web estática para GitHub Pages con Firebase Authentication, Firestore y lectura del Excel diario `Excel_siesa.xls` desde Google Drive.
 
