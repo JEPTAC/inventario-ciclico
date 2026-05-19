@@ -1,0 +1,95 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function active() {
+      return signedIn() && userProfile().active == true;
+    }
+
+    function role() {
+      return active() ? userProfile().role : "none";
+    }
+
+    function superAdmin() {
+      return active() && (role() == "super_admin" || role() == "admin");
+    }
+
+    function hasAnyRole(roles) {
+      return superAdmin() || (active() && role() in roles);
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (uid == request.auth.uid || superAdmin());
+
+      allow create: if signedIn() && (
+        // Primer ingreso de un usuario: queda inactivo hasta que el super admin lo habilite.
+        (uid == request.auth.uid
+          && request.resource.data.role == "inventario"
+          && request.resource.data.active == false)
+        || superAdmin()
+      );
+
+      allow update, delete: if superAdmin();
+    }
+
+    match /settings/{docId} {
+      allow read: if active();
+      allow write: if hasAnyRole(["jefe_logistico"]);
+    }
+
+    match /syncState/{docId} {
+      allow read: if active();
+      allow write: if hasAnyRole(["jefe_logistico"]);
+    }
+
+    match /materials/{materialId} {
+      allow read: if active();
+      allow create, update: if hasAnyRole(["jefe_logistico"]);
+      allow delete: if superAdmin();
+    }
+
+    match /countTasks/{taskId} {
+      allow read: if active();
+
+      // La generación de tareas la hace jefe logístico o super admin.
+      allow create: if hasAnyRole(["jefe_logistico"]);
+
+      // Inventario solo puede avanzar tareas registrando conteos; jefe puede validar novedades.
+      allow update: if hasAnyRole(["jefe_logistico"])
+        || (
+          hasAnyRole(["inventario"])
+          && request.resource.data.diff(resource.data).changedKeys()
+            .hasOnly(["status", "lastCountId", "updatedAt"])
+        );
+
+      allow delete: if superAdmin();
+    }
+
+    match /counts/{countId} {
+      allow read: if active();
+      allow create: if hasAnyRole(["inventario", "jefe_logistico", "auditoria"]);
+      allow update, delete: if superAdmin();
+    }
+
+    match /cases/{caseId} {
+      allow read: if active();
+      allow create: if hasAnyRole(["inventario", "jefe_logistico"]);
+      allow update: if hasAnyRole(["jefe_logistico", "auditoria", "gerencia"]);
+      allow delete: if superAdmin();
+    }
+
+    match /syncLogs/{syncId} {
+      allow read: if active();
+      allow create: if hasAnyRole(["jefe_logistico"]);
+      allow update, delete: if superAdmin();
+    }
+  }
+}

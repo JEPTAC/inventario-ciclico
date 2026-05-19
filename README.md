@@ -1,0 +1,101 @@
+# Inventario Cíclico SIESA - Firebase + Drive v11
+
+Aplicación web estática para GitHub Pages con Firebase Authentication, Firestore y lectura del Excel diario `Excel_siesa.xls` desde Google Drive.
+
+## Configuración incluida
+
+```js
+clientId: "125993982318-gn2177d3muf2iip0co9pf9mii7d12cre.apps.googleusercontent.com"
+folderId: "1Njl9epGdr68LtlOzq3N0QcnXpcOZVFmQ"
+fileName: "Excel_siesa.xls"
+sheetName: "Sheet1"
+```
+
+Firebase: `inventario-ciclico-f53a3`.
+
+## Roles
+
+- `super_admin`: acceso total, creación de usuarios y todos los módulos.
+- `inventario`: solo registra conteos asignados y metraje asignado.
+- `jefe_logistico`: sincroniza SIESA, genera tareas, aprueba conteos, valida novedades y escala a auditoría.
+- `auditoria`: contabiliza independientemente casos escalados, agrega comentarios por referencia y envía a gerencia.
+- `gerencia`: revisa informe, aprueba cierre o autoriza ajuste.
+
+## Módulo general de inventario cíclico
+
+- Frecuencias ABC: 10, 20, 30, 60, 90 y 120 jornadas.
+- El Pareto se calcula con valor, costo, movimiento y variabilidad.
+- El objetivo es distribuir el conteo durante el año sin repetir referencias antes de vencimiento.
+- Si hay diferencia, se genera reconteo; si persiste, pasa a jefe logístico.
+- Si jefe logístico no justifica, escala a auditoría.
+- Auditoría agrega comentarios y contabilización independiente por referencia.
+- Gerencia aprueba o autoriza ajuste final.
+
+## Módulo independiente de metraje de cables
+
+Este módulo queda separado del inventario cíclico general.
+
+Reglas principales:
+
+- Solo aplica a materiales identificados como cables desde el Excel.
+- Se habilita por sesión cada 15 días.
+- La selección es aleatoria, sin criticidad ni Pareto.
+- Calcula cuántos cables debe tomar en cada sesión para llegar al 100% antes del 31 de diciembre.
+- Si un cable fue contado en metraje durante el año actual, no vuelve a entrar hasta el siguiente año.
+- Si un cable es recién ingresado o recién cortado, queda en maduración y no entra al sorteo hasta cumplir el tiempo configurado.
+- La maduración por defecto es de 15 días, configurable en el panel de parámetros.
+
+## Sincronización automática
+
+La app intenta sincronizar a las 8:00 a.m. cuando está abierta con usuario `super_admin` o `jefe_logistico` y Drive autorizado.
+
+Si se requiere actualización automática aunque nadie abra la app, se necesita Apps Script o Cloud Function programada.
+
+## Firebase Authentication
+
+Activa Email/Password y crea el primer usuario. Luego en Firestore crea:
+
+```json
+{
+  "displayName": "Super Admin",
+  "email": "tu_correo@empresa.com",
+  "role": "super_admin",
+  "active": true
+}
+```
+
+Ruta:
+
+```text
+users/{uid}
+```
+
+## Reglas de Firestore
+
+Publica el archivo `firestore.rules`.
+
+## GitHub Pages
+
+Sube a la raíz del repositorio:
+
+```text
+index.html
+styles.css
+app.js
+firebase-config.js
+firestore.rules
+README.md
+```
+
+En Google Cloud agrega el origen autorizado:
+
+```text
+https://TU-USUARIO.github.io
+```
+
+Para prueba local con Live Server:
+
+```text
+http://localhost:5500
+http://127.0.0.1:5500
+```

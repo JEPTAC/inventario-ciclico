@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Inventario Cíclico SIESA</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <div id="loading" class="loading">
+    <div class="loader-card"><div class="loader-logo">ABC</div><h1>Inventario Cíclico SIESA</h1><p>Inicializando aplicación...</p></div>
+  </div>
+
+  <main id="loginView" class="login-view hidden">
+    <section class="login-card">
+      <div class="login-brand"><div class="brand-mark">ABC</div><div><h1>Inventario Cíclico</h1><p>Firebase + Drive + SIESA</p></div></div>
+      <form id="loginForm" class="login-form">
+        <label>Correo<input id="loginEmail" type="email" autocomplete="email" required placeholder="usuario@empresa.com"></label>
+        <label>Contraseña<input id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••"></label>
+        <button class="btn primary" type="submit">Ingresar</button>
+      </form>
+      <div class="login-help">Cada usuario desbloquea únicamente su módulo. El único rol con acceso total es <b>super_admin</b>.</div>
+    </section>
+  </main>
+
+  <div id="appView" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">ABC</div><div><h1>Inventario Cíclico</h1><p>Control, metraje y aprobaciones</p></div></div>
+      <div class="user-box"><span id="userRoleBadge" class="role-badge">Rol</span><b id="userName">Usuario</b><small id="userEmail">correo</small></div>
+      <nav class="nav">
+        <button class="nav-link active" data-view="dashboardView">Panel</button>
+        <button class="nav-link" data-view="usersView" data-roles="super_admin">Usuarios</button>
+        <button class="nav-link" data-view="driveView" data-roles="super_admin,jefe_logistico">Drive / SIESA</button>
+        <button class="nav-link" data-view="inventoryView" data-roles="super_admin,inventario">Inventario</button>
+        <button class="nav-link" data-view="cableView" data-roles="super_admin,inventario,jefe_logistico">Metraje cables</button>
+        <button class="nav-link" data-view="jefeView" data-roles="super_admin,jefe_logistico">Jefe logístico</button>
+        <button class="nav-link" data-view="auditoriaView" data-roles="super_admin,auditoria">Auditoría</button>
+        <button class="nav-link" data-view="gerenciaView" data-roles="super_admin,gerencia">Gerencia</button>
+        <button class="nav-link" data-view="materialsView">Materiales</button>
+        <button class="nav-link" data-view="configView" data-roles="super_admin,jefe_logistico">Configuración</button>
+      </nav>
+      <button id="logoutBtn" class="btn ghost full">Cerrar sesión</button>
+    </aside>
+
+    <section class="content">
+      <header class="topbar">
+        <div><h2 id="pageTitle">Panel general</h2><p id="pageSubtitle">Estado de sincronización, tareas y casos pendientes.</p></div>
+        <div class="top-actions">
+          <button id="connectDriveBtn" class="btn secondary" data-roles="super_admin,jefe_logistico">Conectar Drive</button>
+          <button id="quickSyncBtn" class="btn primary" data-roles="super_admin,jefe_logistico">Sincronizar SIESA</button>
+        </div>
+      </header>
+
+      <section id="dashboardView" class="view active">
+        <div class="kpi-grid">
+          <article class="kpi"><span>Materiales</span><b id="kpiMaterials">0</b><small>activos</small></article>
+          <article class="kpi"><span>Conteo hoy</span><b id="kpiTodayTasks">0</b><small>tareas abiertas</small></article>
+          <article class="kpi"><span>Cables</span><b id="kpiCables">0</b><small>metraje identificado</small></article>
+          <article class="kpi"><span>Jefe</span><b id="kpiJefeCases">0</b><small>casos</small></article>
+          <article class="kpi"><span>Auditoría</span><b id="kpiAuditCases">0</b><small>casos</small></article>
+          <article class="kpi"><span>Gerencia</span><b id="kpiGerenciaCases">0</b><small>casos</small></article>
+        </div>
+        <div class="grid two">
+          <article class="card"><div class="card-head"><h3>Distribución ABC</h3><span class="tag" id="abcStatusTag">Sin datos</span></div><canvas id="abcChart" width="900" height="330"></canvas></article>
+          <article class="card"><div class="card-head"><h3>Cobertura anual</h3><span class="tag green">agenda automática</span></div><div id="agendaSummary" class="summary-list"></div></article>
+        </div>
+        <article class="card"><div class="card-head"><h3>Actividad reciente</h3><span class="tag">trazabilidad</span></div><div id="recentActivity" class="timeline"></div></article>
+      </section>
+
+      <section id="usersView" class="view">
+        <div class="grid two">
+          <article class="card"><div class="card-head"><h3>Crear usuario</h3><span class="tag dark">super admin</span></div>
+            <form id="createUserForm" class="form-grid">
+              <label>Nombre<input id="newUserName" required placeholder="Nombre del usuario"></label>
+              <label>Correo<input id="newUserEmail" type="email" required placeholder="usuario@empresa.com"></label>
+              <label>Contraseña temporal<input id="newUserPass" type="password" minlength="6" required placeholder="mínimo 6 caracteres"></label>
+              <label>Rol<select id="newUserRole" required><option value="inventario">Inventario</option><option value="jefe_logistico">Jefe logístico</option><option value="auditoria">Auditoría interna</option><option value="gerencia">Gerencia</option><option value="super_admin">Super admin</option></select></label>
+              <button class="btn primary" type="submit">Crear usuario</button>
+            </form>
+            <div class="notice">El usuario queda creado en Firebase Authentication y con perfil de rol en Firestore.</div>
+          </article>
+          <article class="card"><div class="card-head"><h3>Usuarios registrados</h3><button id="refreshUsersBtn" class="btn secondary">Actualizar</button></div><div id="usersTable"></div></article>
+        </div>
+      </section>
+
+      <section id="driveView" class="view">
+        <div class="grid two">
+          <article class="card"><div class="card-head"><h3>Fuente Drive / SIESA</h3><span id="driveState" class="tag">No conectado</span></div>
+            <div class="config-grid"><label>Client ID<input id="cfgDriveClient" readonly></label><label>ID carpeta<input id="cfgDriveFolder" readonly></label><label>Archivo<input id="cfgDriveFile" readonly></label><label>Hoja<input id="cfgDriveSheet" readonly></label></div>
+            <div class="button-row"><button id="connectDriveBtn2" class="btn secondary">Conectar Google Drive</button><button id="syncDriveBtn" class="btn primary">Leer Excel y sincronizar</button><button id="generateTodayBtn" class="btn blue">Generar conteo diario</button><button id="generateCableBtn" class="btn warn">Generar metraje cables</button></div>
+            <div id="syncLogBox" class="log-box"></div>
+          </article>
+          <article class="card"><h3>Actualización automática 8:00 a.m.</h3><p>La app intenta sincronizar automáticamente a las 8:00 a.m. cuando un super admin o jefe logístico tiene la sesión abierta y Drive autorizado.</p><div class="notice">Para que se ejecute aunque nadie abra la app se necesita backend, Apps Script o Cloud Function programada.</div><ol class="steps"><li>Descargar Excel desde SIESA.</li><li>Subirlo a Drive como <b>Excel_siesa.xls</b>.</li><li>La app toma el archivo más reciente de la carpeta.</li></ol></article>
+        </div>
+      </section>
+
+      <section id="inventoryView" class="view"><article class="card"><div class="card-head"><div><h3>Panel inventario</h3><p>El usuario de inventario solo registra los productos asignados para conteo.</p></div><div class="filters"><input id="taskSearch" placeholder="Buscar referencia"><select id="taskFilter"><option value="">Todas</option><option value="assigned">Asignadas</option><option value="recount_required">Reconteo</option></select></div></div><div id="tasksTable"></div></article></section>
+      <section id="cableView" class="view"><article class="card"><div class="card-head"><div><h3>Inventario de metraje de cables</h3><p>Referencias identificadas como cable. Se programan por sesiones de 15 días para cubrir el 100% anual.</p></div><button id="generateCableBtn2" class="btn primary" data-roles="super_admin,jefe_logistico">Generar sesión</button></div><div id="cableTasksTable"></div></article></section>
+      <section id="jefeView" class="view"><article class="card"><div class="card-head"><div><h3>Panel jefe logístico</h3><p>Supervisa, verifica novedades y escala a auditoría si no puede justificar.</p></div><span class="tag yellow">Control logístico</span></div><div id="jefeCasesTable"></div></article></section>
+      <section id="auditoriaView" class="view"><article class="card"><div class="card-head"><div><h3>Panel auditoría interna</h3><p>Contabiliza de forma independiente, agrega comentarios por referencia y envía informe a gerencia.</p></div><span class="tag red">Auditoría</span></div><div id="auditCasesTable"></div></article></section>
+      <section id="gerenciaView" class="view"><article class="card"><div class="card-head"><div><h3>Panel gerencia</h3><p>Revisa el informe, aprueba cierre o autoriza ajuste.</p></div><span class="tag dark">Gerencia</span></div><div id="gerenciaCasesTable"></div></article></section>
+      <section id="materialsView" class="view"><article class="card"><div class="card-head"><div><h3>Materiales consolidados</h3><p>Base SIESA, Pareto, movimiento y metraje de cables.</p></div><div class="filters"><input id="materialSearch" placeholder="Buscar material"><select id="materialBandFilter"><option value="">Todas las bandas</option><option>A+</option><option>A</option><option>B</option><option>C</option><option>D</option><option>E</option></select><select id="materialCableFilter"><option value="">Todos</option><option value="cable">Solo cables</option></select></div></div><div id="materialsTable"></div></article></section>
+      <section id="configView" class="view"><div class="grid two"><article class="card"><div class="card-head"><h3>Parámetros</h3><button id="saveSettingsBtn" class="btn primary">Guardar</button></div><div class="config-grid"><label>Límite diario general<input id="setDailyLimit" type="number" min="1" max="80"></label><label>Días activos<input id="setActiveDays" placeholder="1,2,3,4,5"></label><label>Hora auto sync<input id="setAutoHour" type="number" min="0" max="23"></label><label>Hoja Excel<input id="setSheetName"></label><label>Periodo metraje cables<input id="setCablePeriod" type="number" min="1"></label><label>Maduración cable reciente<input id="setCableCooldown" type="number" min="0"></label><label>Límite por sesión cables<input id="setCableLimit" type="number" min="0"></label></div><div id="bandsEditor" class="bands-editor"></div></article><article class="card"><h3>Reglas activas</h3><div class="summary-list"><div class="summary-item"><span>Frecuencias ABC</span><b>10/20/30/60/90/120</b></div><div class="summary-item"><span>Conteo diario</span><b>máximo configurable</b></div><div class="summary-item"><span>Metraje cables</span><b>módulo separado cada 15 días</b></div><div class="summary-item"><span>Selección metraje</span><b>aleatoria, sin criticidad</b></div><div class="summary-item"><span>Meta metraje</span><b>100% al 31 de diciembre</b></div><div class="summary-item"><span>Usuario con todos los módulos</span><b>super_admin</b></div></div></article></div></section>
+    </section>
+  </div>
+
+  <dialog id="countDialog" class="dialog"><form id="countForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="countDialogTitle">Registrar conteo</h3><p id="countDialogSubtitle"></p></div><button type="button" id="closeCountDialog" class="icon-btn">×</button></div><input type="hidden" id="countTaskId"><input type="hidden" id="countCaseId"><input type="hidden" id="countMode"><input type="hidden" id="countMaterialRef"><div class="form-grid"><label>Fecha<input id="countDate" type="date" required></label><label id="systemQtyLabel">Stock sistema<input id="countSystemQty" type="number" step="0.001" readonly></label><label id="countQtyLabel">Cantidad contada<input id="countQty" type="number" step="0.001" required></label><label>Soporte / documento<input id="countSupport" placeholder="Foto, acta, remisión, salida, PDF"></label><label>Causa<select id="countCause"><option>N/A</option><option>Error de ubicación</option><option>Salida no registrada</option><option>Ingreso no registrado</option><option>Error documental</option><option>Error de conteo</option><option>Merma, daño o pérdida</option><option>Unidad de medida / conversión</option></select></label><label>Comentarios por referencia<textarea id="countObs" rows="4"></textarea></label></div><div class="dialog-actions"><button type="button" id="cancelCountBtn" class="btn ghost">Cancelar</button><button type="submit" class="btn primary">Guardar</button></div></form></dialog>
+
+  <dialog id="caseDialog" class="dialog"><form id="caseActionForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="caseDialogTitle">Gestionar caso</h3><p id="caseDialogSubtitle"></p></div><button type="button" id="closeCaseDialog" class="icon-btn">×</button></div><input type="hidden" id="caseId"><input type="hidden" id="caseAction"><label>Observación / justificación<textarea id="caseComment" rows="5" required placeholder="Explique decisión, soporte o acción correctiva."></textarea></label><div class="dialog-actions"><button type="button" id="cancelCaseBtn" class="btn ghost">Cancelar</button><button type="submit" class="btn primary">Confirmar</button></div></form></dialog>
+
+  <div id="toast" class="toast"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
