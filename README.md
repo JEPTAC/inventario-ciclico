@@ -299,3 +299,14 @@ Corrección:
 
 
 Nota v26: al sincronizar SIESA, también se enriquecen las tareas abiertas con nombre, línea, costo y valor desde el catálogo.
+
+
+## Versión v27 - Corrección descripción columna E
+
+Corrección puntual:
+- La descripción/nombre del material se toma del encabezado cuando existe.
+- Si el encabezado no se detecta, se toma directamente de la columna E del Excel SIESA.
+- La app conserva columnas por posición real: `__colA`, `__colB`, `__colC`, `__colD`, `__colE`.
+- Las tareas muestran descripción y línea con fallback al catálogo `lineas_catalog.json`.
+- No cambia reglas de Firestore.
+- Después de subir esta versión, se debe sincronizar SIESA nuevamente para enriquecer materiales y tareas abiertas.

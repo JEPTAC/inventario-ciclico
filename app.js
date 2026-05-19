@@ -122,7 +122,7 @@ const VIEW_ACCESS = {
 
 const aliases = {
   ref:["referencia","material","codigo","código","codigomaterial","codigo material","articulo","artículo","sku","ref"],
-  desc:["descripcion","descripción","desc item","desc. item","descitem","texto breve","nombre","producto","denominacion","denominación","detalle","descripcion item","descripción item","nombre material"],
+  desc:["descripcion","descripción","desc item","desc. item","descitem","texto breve","nombre","producto","denominacion","denominación","detalle","descripcion item","descripción item","nombre material","nombre item","nom item","descripcion larga","descripción larga","item","desc"],
   category:["categoria","categoría","grupo","familia","linea","línea","clase"],
   location:["ubicacion","ubicación","almacen","almacén","bodega","localizacion","localización","posicion","posición","estante"],
   unit:["unidad","um","umb","unidad medida","unidad de medida"],
@@ -801,7 +801,13 @@ function renderCableTasks(){
 }
 function taskTable(rows, cable = false){
   if(!rows.length) return `<div class="empty">No hay tareas abiertas.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Referencia</th><th>Descripción</th><th>Ubicación</th><th>Banda</th><th>${cable ? "Metros sistema" : "Stock"}</th><th>Costo</th><th>Valor</th><th>Tipo</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${rows.map(t => `<tr><td>${esc(t.scheduledDate || "")}</td><td><b>${esc(t.materialRef)}</b></td><td>${esc(t.description || "")}</td><td>${esc(t.location || "")}</td><td><span class="pill dark">${esc(t.band || "")}</span></td><td>${fmt(t.systemQty)}</td><td>${money(t.unitCost || 0)}</td><td>${money(t.inventoryValue || ((t.unitCost || 0) * (t.systemQty || 0)))}</td><td>${esc(t.taskType || t.type || "general")}</td><td>${statusPill(t.status)}</td><td><div class="row-actions">${["assigned","recount_required","pending_inventory"].includes(t.status) ? `<button class="tiny" data-count-task="${esc(t.id)}">Registrar</button>` : ""}${t.status === "pending_jefe_approval" && hasAny(["jefe_logistico"]) ? `<button class="tiny blue" data-approve-task="${esc(t.id)}">Aprobar</button>` : ""}</div></td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Referencia</th><th>Descripción</th><th>Línea</th><th>Ubicación</th><th>Banda</th><th>${cable ? "Metros sistema" : "Stock"}</th><th>Costo</th><th>Valor</th><th>Tipo</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${rows.map(t => {
+    const cat = catalogMaterial(t.materialRef);
+    const desc = t.description || cat?.description || "";
+    const line = t.catalogLine || t.category || cat?.line || "";
+    const value = Number(t.inventoryValue || ((t.unitCost || 0) * (t.systemQty || 0)) || 0);
+    return `<tr><td>${esc(t.scheduledDate || "")}</td><td><b>${esc(t.materialRef)}</b></td><td>${esc(desc)}</td><td>${esc(line)}</td><td>${esc(t.location || "")}</td><td><span class="pill dark">${esc(t.band || "")}</span></td><td>${fmt(t.systemQty)}</td><td>${money(t.unitCost || 0)}</td><td>${money(value)}</td><td>${esc(t.taskType || t.type || "general")}</td><td>${statusPill(t.status)}</td><td><div class="row-actions">${["assigned","recount_required","pending_inventory"].includes(t.status) ? `<button class="tiny" data-count-task="${esc(t.id)}">Registrar</button>` : ""}${t.status === "pending_jefe_approval" && hasAny(["jefe_logistico"]) ? `<button class="tiny blue" data-approve-task="${esc(t.id)}">Aprobar</button>` : ""}</div></td></tr>`;
+  }).join("")}</tbody></table></div>`;
 }
 function bindTaskButtons(){
   $$('[data-count-task]').forEach(btn => btn.addEventListener("click", () => openTaskCountDialog(btn.dataset.countTask)));
@@ -835,7 +841,7 @@ function renderMaterials(){
   if(cable === "cable") rows = rows.filter(m => isCableMaterial(m));
   rows = rows.slice(0, 1000);
   if(!rows.length){ $("#materialsTable").innerHTML = `<div class="empty">No hay materiales para mostrar.</div>`; return; }
-  $("#materialsTable").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Referencia</th><th>Descripción</th><th>Línea</th><th>Ubicación</th><th>Stock</th><th>Costo</th><th>Valor</th><th>Banda</th><th>Cable</th><th>Razón cable</th><th>Disponible metraje</th></tr></thead><tbody>${rows.map(m => `<tr><td><b>${esc(m.ref)}</b></td><td>${esc(m.description || "")}</td><td>${esc(m.catalogLine || m.category || "")}</td><td>${esc(m.location || "")}</td><td>${fmt(m.stockSystem)}</td><td>${money(m.unitCost)}</td><td>${money(m.inventoryValue)}</td><td><span class="pill dark">${esc(m.band || "")}</span></td><td>${isCableMaterial(m) ? '<span class="pill blue">Cable</span>' : '<span class="pill gray">Normal</span>'}</td><td>${esc(m.cableReason || "")}</td><td>${esc(m.cableAvailableDate || "")}</td></tr>`).join("")}</tbody></table></div>`;
+  $("#materialsTable").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Referencia</th><th>Descripción</th><th>Línea</th><th>Ubicación</th><th>Stock</th><th>Costo</th><th>Valor</th><th>Banda</th><th>Cable</th><th>Razón cable</th><th>Disponible metraje</th></tr></thead><tbody>${rows.map(m => `${(() => { const cat = catalogMaterial(m.ref); const desc = m.description || cat?.description || ""; const line = m.catalogLine || m.category || cat?.line || ""; return `<tr><td><b>${esc(m.ref)}</b></td><td>${esc(desc)}</td><td>${esc(line)}</td><td>${esc(m.location || "")}</td><td>${fmt(m.stockSystem)}</td><td>${money(m.unitCost)}</td><td>${money(m.inventoryValue)}</td><td><span class="pill dark">${esc(m.band || "")}</span></td><td>${isCableMaterial(m) ? '<span class="pill blue">Cable</span>' : '<span class="pill gray">Normal</span>'}</td><td>${esc(m.cableReason || "")}</td><td>${esc(m.cableAvailableDate || "")}</td></tr>`; })()}`).join("")}</tbody></table></div>`;
 }
 
 function renderLineCatalog(){
@@ -1207,12 +1213,37 @@ function sheetToObjects(ws){
   let headerIndex = -1, bestScore = 0;
   matrix.slice(0, 50).forEach((row, idx) => {
     const cells = row.map(norm);
-    const score = (cells.some(c => aliases.ref.some(a => c.includes(norm(a)))) ? 5 : 0) + (cells.some(c => aliases.stock.some(a => c.includes(norm(a)))) ? 3 : 0) + (cells.some(c => aliases.cost.some(a => c.includes(norm(a)))) ? 2 : 0) + (cells.some(c => aliases.desc.some(a => c.includes(norm(a)))) ? 1 : 0);
+    const score =
+      (cells.some(c => aliases.ref.some(a => c.includes(norm(a)))) ? 5 : 0) +
+      (cells.some(c => aliases.stock.some(a => c.includes(norm(a)))) ? 3 : 0) +
+      (cells.some(c => aliases.cost.some(a => c.includes(norm(a)))) ? 2 : 0) +
+      (cells.some(c => aliases.desc.some(a => c.includes(norm(a)))) ? 1 : 0);
     if(score > bestScore){ bestScore = score; headerIndex = idx; }
   });
   if(headerIndex < 0 || bestScore < 5) throw new Error("No se detectó una fila de encabezados válida.");
+
   const headers = matrix[headerIndex].map((h,i) => String(h || `Columna_${i+1}`).trim());
-  return matrix.slice(headerIndex + 1).filter(row => row.some(v => String(v ?? "").trim() !== "")).map(row => Object.fromEntries(headers.map((h,i) => [h, row[i] ?? ""])));
+
+  return matrix
+    .slice(headerIndex + 1)
+    .filter(row => row.some(v => String(v ?? "").trim() !== ""))
+    .map(row => {
+      const obj = Object.fromEntries(headers.map((h,i) => [h, row[i] ?? ""]));
+
+      // Respaldo por posición real de Excel.
+      // A=0, B=1, C=2, D=3, E=4. El nombre del material en tu SIESA viene en E.
+      obj.__cells = row;
+      obj.__colA = row[0] ?? "";
+      obj.__colB = row[1] ?? "";
+      obj.__colC = row[2] ?? "";
+      obj.__colD = row[3] ?? "";
+      obj.__colE = row[4] ?? "";
+      obj.__colF = row[5] ?? "";
+      obj.__colG = row[6] ?? "";
+      obj.__colH = row[7] ?? "";
+
+      return obj;
+    });
 }
 function getByAliases(row, list){
   const keys = Object.keys(row || {}), map = new Map(keys.map(k => [norm(k), row[k]]));
@@ -1220,13 +1251,49 @@ function getByAliases(row, list){
   for(const k of keys){ const nk = norm(k); if(list.some(a => nk.includes(norm(a)))) return row[k]; }
   return "";
 }
+
+function rawColumn(row, zeroIndex){
+  const letter = String.fromCharCode(65 + zeroIndex);
+  const direct = row?.[`__col${letter}`];
+  if(direct !== undefined && direct !== null && String(direct).trim() !== "") return direct;
+  if(Array.isArray(row?.__cells)) return row.__cells[zeroIndex] ?? "";
+  return Object.values(row || {})[zeroIndex] ?? "";
+}
+
+function looksLikeDescription(value){
+  const s = String(value ?? "").trim();
+  if(!s || s.length < 3) return false;
+  if(/^\d+(\.\d+)?$/.test(s)) return false;
+  return /[a-zA-ZÁÉÍÓÚÜÑáéíóúüñ]/.test(s);
+}
+
+function bestDescriptionFromRow(row){
+  const byHeader = String(getByAliases(row, aliases.desc) || "").trim();
+  if(looksLikeDescription(byHeader)) return byHeader;
+
+  // Corrección principal: en el Excel SIESA el nombre del material viene en columna E.
+  const colE = String(rawColumn(row, 4) || "").trim();
+  if(looksLikeDescription(colE)) return colE;
+
+  // Respaldos por si otro export ubica el nombre en B, C, D o F.
+  for(const idx of [1,2,3,5]){
+    const candidate = String(rawColumn(row, idx) || "").trim();
+    if(looksLikeDescription(candidate)) return candidate;
+  }
+
+  return byHeader;
+}
 function normalizeMaterial(row){
-  const ref = String(getByAliases(row, aliases.ref)).trim();
+  const ref = String(getByAliases(row, aliases.ref) || rawColumn(row, 0)).trim();
   if(!ref) return null;
   const stock = num(getByAliases(row, aliases.stock));
   const unitCost = num(getByAliases(row, aliases.cost));
   const totalValue = num(getByAliases(row, aliases.totalValue));
-  let description = String(getByAliases(row, aliases.desc) || "").trim();
+
+  // El nombre/descripción del material debe salir de encabezado si existe,
+  // y si no, de la columna E del Excel SIESA.
+  let description = bestDescriptionFromRow(row);
+
   let category = String(getByAliases(row, aliases.category) || "").trim();
   let unit = String(getByAliases(row, aliases.unit) || "").trim();
   let location = String(getByAliases(row, aliases.location) || "").trim();
