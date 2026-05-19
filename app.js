@@ -224,6 +224,48 @@ function nextCableSessionDateFrom(lastISO){
 function cableTaskOpenTasks(){
   return state.tasks.filter(t => t.taskType === "cable_metraje" && ["assigned","recount_required","pending_inventory","pending_jefe_approval","pending_jefe_logistico"].includes(t.status));
 }
+
+function isCableMaterial(material){
+  const text = norm([
+    material?.ref,
+    material?.description,
+    material?.category,
+    material?.unit
+  ].join(" "));
+  const keywords = state.settings?.cableKeywords?.length
+    ? state.settings.cableKeywords
+    : [
+      "cable", "conductor", "alambre", "thhn", "thw", "awg", "cobre",
+      "aluminio", "calibre", "encauchetado", "duplex", "triplex",
+      "fotovoltaico", "coaxial", "utp", "fibra", "cordon", "cordón"
+    ];
+  return keywords.some(k => text.includes(norm(k)));
+}
+
+function nextMeterSessionDate(){
+  const today = todayISO();
+  const period = Math.max(1, Number(state.settings?.cablePeriodDays || state.settings?.cableMeterDays || 15));
+  const start = `${yearOf(today)}-01-01`;
+  let d = start;
+  let guard = 0;
+  while(d < today && guard < 400){
+    d = addDays(d, period);
+    guard++;
+  }
+  return d;
+}
+
+function isMeterSessionOpen(){
+  const today = todayISO();
+  if(!state.lastCableSession?.nextSessionDate && !state.lastCableSession?.lastSessionDate){
+    return today >= nextMeterSessionDate();
+  }
+  const last = state.lastCableSession?.lastSessionDate || "";
+  const next = state.lastCableSession?.nextSessionDate || nextCableSessionDateFrom(last);
+  return today >= next;
+}
+
+
 function toISO(value){
   if(!value) return "";
   if(value instanceof Date && !Number.isNaN(value.getTime())){

@@ -234,3 +234,29 @@ Uso del diagnóstico:
 1. Abrir consola.
 2. Escribir `await firebaseHealthCheck()`.
 3. Revisar si `settingsReadable`, `materialsReadable` y `tasksReadable` son true.
+
+
+## Versión v22 - Hotfix de arranque
+
+Corrige el error:
+
+`ReferenceError: isCableMaterial is not defined`
+
+Causa:
+La v21 agregó KPIs de metraje que usan `isCableMaterial()`, pero esa función no quedó declarada después de la limpieza del archivo.
+
+Corrección:
+- Se restauró `isCableMaterial`.
+- Se restauró `nextMeterSessionDate`.
+- Se restauró `isMeterSessionOpen`.
+- Se validó `node --check app.js`: OK.
+- Se validaron funciones duplicadas: 0.
+- No cambia reglas de Firestore.
+
+
+## Versión v23 - QA de entrega
+
+- Se validó sintaxis con `node --check app.js`: OK.
+- Se validaron funciones críticas y duplicados: OK.
+- Se agregaron los KPI visibles de cobertura anual, metraje anual y meta diaria al HTML.
+- No cambia reglas de Firestore frente a v22.
