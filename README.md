@@ -199,3 +199,38 @@ En la v18 quedaron dos funciones `forceCableMeterTasks`. El navegador detiene to
 
 Corrección:
 Se eliminó la función duplicada antigua y se conserva la versión nueva del módulo de metraje anual por sesión cada 15 días.
+
+
+## Versión v20 - Corrección de registro de conteo
+
+Corrige el error:
+
+`ReferenceError: saveCount is not defined`
+
+Causa:
+La v19 tenía el formulario conectado a `saveCount`, pero la función no estaba declarada.
+
+Corrección:
+- Se restauró `saveCount`.
+- Se conserva `openTaskCountDialog`.
+- El conteo exacto queda pendiente de aprobación del jefe logístico.
+- Si hay diferencia, genera reconteo.
+- Si persiste la diferencia, escala a jefe logístico.
+- También permite registrar conteos desde casos de jefe logístico o auditoría.
+
+
+## Versión v21 - Estabilidad de arranque Firebase
+
+Validaciones hechas antes de empaquetar:
+
+- `node --check app.js`: OK.
+- Funciones duplicadas: 0.
+- Funciones críticas presentes: `init`, `setupEvents`, `loadProfile`, `loadSettings`, `refreshAll`, `syncFromDrive`, `forceMandatoryDailyTasks`, `forceCableMeterTasks`, `saveCount`.
+- El arranque ya no se queda pegado silenciosamente: muestra error visible en la tarjeta de inicialización.
+- `refreshAll()` carga colecciones de forma segura; si una colección falla por reglas, la app no queda bloqueada completa.
+- Se agregó diagnóstico en consola: `firebaseHealthCheck()`.
+
+Uso del diagnóstico:
+1. Abrir consola.
+2. Escribir `await firebaseHealthCheck()`.
+3. Revisar si `settingsReadable`, `materialsReadable` y `tasksReadable` son true.

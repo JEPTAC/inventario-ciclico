@@ -56,6 +56,40 @@ const state = {
   autoTimer: null
 };
 
+function showBootError(message, err = null){
+  console.error(message, err || "");
+  const loading = document.querySelector("#loading");
+  const box = document.querySelector("#bootErrorBox");
+  if(box){
+    const detail = err?.message || String(err || "");
+    box.style.display = "block";
+    box.innerHTML = `<b>No se pudo iniciar correctamente.</b><br>${esc(String(message))}${detail ? `<br><small>${esc(detail)}</small>` : ""}<br><br><small>Revisa consola, reglas de Firestore y users/{uid}.</small>`;
+  }
+  if(loading) loading.classList.remove("hidden");
+}
+
+window.addEventListener("error", event => {
+  showBootError("Error de JavaScript durante el arranque.", event.error || event.message);
+});
+
+window.addEventListener("unhandledrejection", event => {
+  showBootError("Promesa rechazada durante el arranque.", event.reason || event);
+});
+
+async function safeLoad(label, fn){
+  try{
+    await fn();
+    return true;
+  }catch(err){
+    console.warn(`Carga parcial fallida: ${label}`, err);
+    state.initWarnings ||= [];
+    state.initWarnings.push({ label, message: err?.message || String(err) });
+    return false;
+  }
+}
+
+
+
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
 
@@ -323,28 +357,62 @@ function groupBy(arr, fn){
 }
 
 async function init(){
-  setupEvents();
-  renderDriveConfig();
+  try{
+    setupEvents();
+    renderDriveConfig();
+  }catch(err){
+    showBootError("Falló la conexión inicial de eventos HTML.", err);
+    return;
+  }
+
+  const bootTimeout = setTimeout(() => {
+    const loadingVisible = !$("#loading")?.classList.contains("hidden");
+    if(loadingVisible){
+      showBootError("La app sigue inicializando después de varios segundos. Puede ser problema de Firebase, permisos o red.");
+    }
+  }, 12000);
+
   onAuthStateChanged(auth, async user => {
     try{
       state.user = user;
-      if(!user){ showLogin(); return; }
+      if(!user){
+        clearTimeout(bootTimeout);
+        showLogin();
+        return;
+      }
+
       await loadProfile(user);
+
       if(!state.profile?.active){
+        clearTimeout(bootTimeout);
         showLogin();
         toast("Usuario inactivo o sin rol autorizado. El super admin debe activarlo.", "error");
         await signOut(auth);
         return;
       }
+
       await loadSettings();
       await refreshAll();
+      clearTimeout(bootTimeout);
       showApp();
       scheduleAutoSyncChecker();
+
+      console.info("Firebase iniciado correctamente", {
+        uid: user.uid,
+        email: user.email,
+        role: role(),
+        projectId: firebaseConfig.projectId
+      });
     }catch(err){
-      console.error(err);
+      clearTimeout(bootTimeout);
+      showBootError("Firebase autenticó, pero Firestore bloqueó o falló la carga inicial.", err);
       toast(err.message || "Error iniciando aplicación", "error");
       showLogin();
     }
+  }, err => {
+    clearTimeout(bootTimeout);
+    showBootError("Firebase Auth no pudo inicializar el observador de sesión.", err);
+    showLogin();
   });
 }
 
@@ -391,32 +459,54 @@ async function loadProfile(user){
   state.profile = { id:snap.id, ...snap.data() };
 }
 async function loadSettings(){
-  const sref = doc(db, "settings", "inventory");
-  const snap = await getDoc(sref);
-  if(!snap.exists()){
+  try{
+    const sref = doc(db, "settings", "inventory");
+    const snap = await getDoc(sref);
+    if(!snap.exists()){
+      state.settings = structuredClone(defaultSettings);
+      if(hasAny(["jefe_logistico"])) await setDoc(sref, { ...state.settings, drive:driveConfig, createdAt:nowTS(), updatedAt:nowTS() });
+      return;
+    }
+    const data = snap.data();
+    state.settings = {
+      ...structuredClone(defaultSettings),
+      ...data,
+      bands: data.bands?.length ? data.bands : structuredClone(defaultSettings.bands),
+      activeCountingDays: Array.isArray(data.activeCountingDays) ? data.activeCountingDays.map(Number) : [1,2,3,4,5],
+      cableKeywords: data.cableKeywords?.length ? data.cableKeywords : defaultSettings.cableKeywords
+    };
+  }catch(err){
+    console.warn("No se pudo leer settings/inventory. Se usarán parámetros por defecto.", err);
     state.settings = structuredClone(defaultSettings);
-    if(hasAny(["jefe_logistico"])) await setDoc(sref, { ...state.settings, drive:driveConfig, createdAt:nowTS(), updatedAt:nowTS() });
-    return;
+    state.initWarnings ||= [];
+    state.initWarnings.push({ label:"settings/inventory", message:err?.message || String(err) });
   }
-  const data = snap.data();
-  state.settings = {
-    ...structuredClone(defaultSettings),
-    ...data,
-    bands: data.bands?.length ? data.bands : structuredClone(defaultSettings.bands),
-    activeCountingDays: Array.isArray(data.activeCountingDays) ? data.activeCountingDays.map(Number) : [1,2,3,4,5],
-    cableKeywords: data.cableKeywords?.length ? data.cableKeywords : defaultSettings.cableKeywords
-  };
 }
 async function refreshAll(){
-  await Promise.all([loadMaterials(), loadTasks(), loadCases(), loadSyncLogs(), loadRecentCounts(), loadCableSessionState(), isSuper() ? loadUsers() : Promise.resolve()]);
+  state.initWarnings = [];
+  await safeLoad("materials", loadMaterials);
+  await safeLoad("countTasks", loadTasks);
+  await safeLoad("cases", loadCases);
+  await safeLoad("syncLogs", loadSyncLogs);
+  await safeLoad("counts", loadRecentCounts);
+  await safeLoad("syncState/cable_metraje", loadCableSessionState);
+  if(isSuper()) await safeLoad("users", loadUsers);
   renderAll();
+
+  if(state.initWarnings.length){
+    console.warn("La app inició con advertencias:", state.initWarnings);
+    const msg = state.initWarnings.map(w => `${w.label}: ${w.message}`).join(" | ");
+    toast("La app inició con advertencias. Revisa consola.", "error");
+    console.warn(msg);
+  }
 }
+
 async function loadMaterials(){
   const snap = await getDocs(query(collection(db, "materials"), limit(6000)));
   state.materials = snap.docs.map(d => ({ id:d.id, ...d.data() }));
 }
 async function loadTasks(){
-  const snap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned", "recount_required", "pending_inventory", "pending_jefe_approval"]), limit(900)));
+  const snap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned", "recount_required", "pending_inventory", "pending_jefe_approval", "pending_jefe_logistico"]), limit(900)));
   state.tasks = snap.docs.map(d => ({ id:d.id, ...d.data() }));
 }
 async function loadCases(){
@@ -1437,6 +1527,197 @@ async function saveCaseCount(mode){
   toast("Contabilización agregada al informe del caso.");
   await refreshAll();
 }
+
+async function saveCount(e){
+  e.preventDefault();
+
+  if(!hasAny(["inventario", "jefe_logistico", "auditoria"])){
+    toast("Tu usuario no tiene permiso para registrar conteos.", "error");
+    return;
+  }
+
+  const taskId = $("#countTaskId").value;
+  const caseId = $("#countCaseId").value;
+  const mode = $("#countMode").value || "task";
+  const date = $("#countDate").value || todayISO();
+  const systemQty = num($("#countSystemQty").value);
+  const countedQty = num($("#countQty").value);
+  const diff = countedQty - systemQty;
+  const absDiff = Math.abs(diff);
+  const hasDiff = absDiff > 0.0001;
+  const support = $("#countSupport").value || "";
+  const cause = $("#countCause").value || "N/A";
+  const obs = $("#countObs").value || "";
+
+  if(taskId){
+    const taskSnap = await getDoc(doc(db, "countTasks", taskId));
+    if(!taskSnap.exists()){
+      toast("La tarea ya no existe o no tienes permiso para verla.", "error");
+      return;
+    }
+
+    const task = { id:taskSnap.id, ...taskSnap.data() };
+    const isCable = task.taskType === "cable_metraje" || task.type === "cable_metraje";
+
+    const countRef = await addDoc(collection(db, "counts"), {
+      taskId:task.id,
+      taskType:task.taskType || task.type || "general",
+      materialRef:task.materialRef,
+      materialId:task.materialId || safeId(task.materialRef),
+      description:task.description || "",
+      location:task.location || "",
+      band:task.band || "",
+      date,
+      systemQty,
+      countedQty,
+      diff,
+      absDiff,
+      result:hasDiff ? "Diferencia" : "Exacto",
+      cause,
+      support,
+      obs,
+      countedByUid:state.user.uid,
+      countedByEmail:state.user.email,
+      countedByRole:role(),
+      createdAt:nowTS()
+    });
+
+    if(!hasDiff){
+      await updateDoc(doc(db, "countTasks", task.id), {
+        status:"pending_jefe_approval",
+        lastCountId:countRef.id,
+        updatedAt:nowTS(),
+        lastComment:isCable ? "Metraje exacto pendiente de aprobación." : "Conteo exacto pendiente de aprobación."
+      });
+
+      await addDoc(collection(db, "cases"), {
+        materialRef:task.materialRef,
+        materialId:task.materialId || safeId(task.materialRef),
+        description:task.description || "",
+        location:task.location || "",
+        status:"pending_jefe_approval",
+        type:isCable ? "aprobacion_metraje_exacto" : "aprobacion_conteo_exacto",
+        diff:0,
+        sourceTaskId:task.id,
+        lastCountId:countRef.id,
+        lastComment:isCable ? "Metraje exacto pendiente de aprobación jefe logístico." : "Conteo exacto pendiente de aprobación jefe logístico.",
+        createdAt:nowTS(),
+        createdByUid:state.user.uid,
+        createdByEmail:state.user.email,
+        history:[historyEntry(isCable ? "metraje_exacto" : "conteo_exacto", "Pendiente aprobación jefe logístico.")]
+      });
+
+      toast(isCable ? "Metraje guardado. Pendiente aprobación del jefe logístico." : "Conteo guardado. Pendiente aprobación del jefe logístico.");
+    }else{
+      if(Number(task.recountRound || 0) < 1){
+        const recountId = `${isCable ? "METERREC" : "REC"}-${todayISO()}-${safeId(task.materialRef)}-${Date.now()}`;
+
+        await setDoc(doc(db, "countTasks", recountId), {
+          ...task,
+          status:"recount_required",
+          type:isCable ? "reconteo_metraje" : "reconteo_inventario",
+          taskType:isCable ? "cable_metraje" : "reconteo_inventario",
+          recountRound:Number(task.recountRound || 0) + 1,
+          scheduledDate:todayISO(),
+          priority:120000,
+          origin:isCable ? "reconteo_metraje_por_diferencia" : "reconteo_por_diferencia",
+          createdAt:nowTS(),
+          createdByUid:state.user.uid,
+          createdByEmail:state.user.email,
+          previousTaskId:task.id,
+          previousCountId:countRef.id
+        });
+
+        await updateDoc(doc(db, "countTasks", task.id), {
+          status:"closed_with_difference_recount_created",
+          lastCountId:countRef.id,
+          updatedAt:nowTS(),
+          lastComment:"Diferencia detectada. Se generó reconteo obligatorio."
+        });
+
+        toast("Se detectó diferencia. Se generó reconteo obligatorio.");
+      }else{
+        await updateDoc(doc(db, "countTasks", task.id), {
+          status:"pending_jefe_logistico",
+          lastCountId:countRef.id,
+          updatedAt:nowTS(),
+          lastComment:"Diferencia persistente. Pasa a jefe logístico."
+        });
+
+        await addDoc(collection(db, "cases"), {
+          materialRef:task.materialRef,
+          materialId:task.materialId || safeId(task.materialRef),
+          description:task.description || "",
+          location:task.location || "",
+          status:"pending_jefe_logistico",
+          type:isCable ? "diferencia_persistente_metraje" : "diferencia_persistente_inventario",
+          diff,
+          sourceTaskId:task.id,
+          lastCountId:countRef.id,
+          lastComment:"La diferencia persistió en reconteo. Requiere validación del jefe logístico.",
+          createdAt:nowTS(),
+          createdByUid:state.user.uid,
+          createdByEmail:state.user.email,
+          history:[historyEntry("diferencia_persistente", obs || "Diferencia persistente.")]
+        });
+
+        toast("Diferencia persistente. Caso enviado al jefe logístico.");
+      }
+    }
+  }else if(caseId){
+    const caseRef = doc(db, "cases", caseId);
+    const caseSnap = await getDoc(caseRef);
+    if(!caseSnap.exists()){
+      toast("El caso ya no existe o no tienes permiso para verlo.", "error");
+      return;
+    }
+
+    const c = { id:caseSnap.id, ...caseSnap.data() };
+    const countRef = await addDoc(collection(db, "counts"), {
+      caseId:c.id,
+      taskType:mode === "auditoria" ? "conteo_auditoria" : "conteo_jefe_logistico",
+      materialRef:c.materialRef,
+      materialId:c.materialId || safeId(c.materialRef),
+      description:c.description || "",
+      location:c.location || "",
+      date,
+      systemQty,
+      countedQty,
+      diff,
+      absDiff,
+      result:hasDiff ? "Diferencia" : "Exacto",
+      cause,
+      support,
+      obs,
+      countedByUid:state.user.uid,
+      countedByEmail:state.user.email,
+      countedByRole:role(),
+      createdAt:nowTS()
+    });
+
+    await updateDoc(caseRef, {
+      lastCountId:countRef.id,
+      lastSystemQty:systemQty,
+      lastCountedQty:countedQty,
+      diff,
+      lastComment:obs || (hasDiff ? "Se mantiene diferencia." : "Conteo exacto en verificación."),
+      updatedAt:nowTS(),
+      updatedByUid:state.user.uid,
+      updatedByEmail:state.user.email,
+      history:arrayUnion(historyEntry(mode === "auditoria" ? "conteo_auditoria" : "conteo_jefe_logistico", obs || `Resultado: ${hasDiff ? "Diferencia" : "Exacto"}`))
+    });
+
+    toast("Conteo del caso guardado.");
+  }else{
+    toast("No hay tarea o caso asociado al formulario.", "error");
+    return;
+  }
+
+  $("#countDialog").close();
+  await refreshAll();
+}
+
+
 function historyEntry(action, comment){ return { at:new Date().toISOString(), by:state.user?.email || "", role:role(), action, comment }; }
 async function approveTask(taskId){
   if(!hasAny(["jefe_logistico"])) return toast("No tienes permiso.", "error");
@@ -1549,6 +1830,46 @@ function scheduleAutoSyncChecker(){
   setTimeout(check, 2500);
   state.autoTimer = setInterval(check, 5 * 60 * 1000);
 }
+
+
+window.firebaseHealthCheck = async function firebaseHealthCheck(){
+  const result = {
+    authUser: auth.currentUser ? { uid: auth.currentUser.uid, email: auth.currentUser.email } : null,
+    projectId: firebaseConfig.projectId,
+    profile: null,
+    settingsReadable: false,
+    materialsReadable: false,
+    tasksReadable: false,
+    errors: []
+  };
+
+  try{
+    if(auth.currentUser){
+      const profileSnap = await getDoc(doc(db, "users", auth.currentUser.uid));
+      result.profile = profileSnap.exists() ? profileSnap.data() : null;
+    }
+  }catch(err){ result.errors.push(["users/{uid}", err.message || String(err)]); }
+
+  try{
+    await getDoc(doc(db, "settings", "inventory"));
+    result.settingsReadable = true;
+  }catch(err){ result.errors.push(["settings/inventory", err.message || String(err)]); }
+
+  try{
+    await getDocs(query(collection(db, "materials"), limit(1)));
+    result.materialsReadable = true;
+  }catch(err){ result.errors.push(["materials", err.message || String(err)]); }
+
+  try{
+    await getDocs(query(collection(db, "countTasks"), limit(1)));
+    result.tasksReadable = true;
+  }catch(err){ result.errors.push(["countTasks", err.message || String(err)]); }
+
+  console.table(result);
+  console.log("Firebase Health Check:", result);
+  return result;
+};
+
 
 init();
 async function forceCableMeterTasks(showToast = true){
