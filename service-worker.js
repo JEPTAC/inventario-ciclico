@@ -1,10 +1,11 @@
-const CACHE_NAME = "inventario-siesa-v25";
+const CACHE_NAME = "inventario-siesa-v26";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./firebase-config.js",
+  "./lineas_catalog.json",
   "./manifest.webmanifest",
   "./logo_alumbrado_publico.png",
   "./favicon.ico",

@@ -285,3 +285,17 @@ Corrección:
 - Se agregaron sonidos con Web Audio cuando hay novedades.
 - Se reforzó responsive iOS/celular con navegación inferior, safe areas, tamaños táctiles y formularios sin zoom.
 - En iOS, las notificaciones deben habilitarse con interacción del usuario y funcionan mejor cuando la app está agregada a pantalla de inicio.
+
+
+## Versión v26 - Catálogo de líneas, nombres, costos y clasificación de cables
+
+- Agrega `lineas_catalog.json` generado desde `lineas.xls`.
+- Completa descripción/nombre del material desde el catálogo cuando el Excel SIESA no trae nombre.
+- Completa línea, unidad y clasificación de cable desde el catálogo.
+- Agrega vista `Líneas / Cables` con tabla de clasificación.
+- Mejora tablas de inventario/tareas para mostrar costo y valor.
+- Agrega KPIs de valor pendiente por contar y valor contado/verificado.
+- El módulo de metraje usa `isCableMaterial()` con catálogo de líneas para no depender solo de palabras clave.
+
+
+Nota v26: al sincronizar SIESA, también se enriquecen las tareas abiertas con nombre, línea, costo y valor desde el catálogo.

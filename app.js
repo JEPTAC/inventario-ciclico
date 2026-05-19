@@ -56,7 +56,8 @@ const state = {
   autoTimer: null,
   deferredInstallPrompt: null,
   audioCtx: null,
-  notificationsEnabled: localStorage.getItem("inventarioAlertsEnabled") === "1"
+  notificationsEnabled: localStorage.getItem("inventarioAlertsEnabled") === "1",
+  lineCatalog: { materials:{}, lines:[], totals:{}, cableLineNames:[] }
 };
 
 function showBootError(message, err = null){
@@ -115,18 +116,19 @@ const VIEW_ACCESS = {
   auditoriaView: ["super_admin", "auditoria"],
   gerenciaView: ["super_admin", "gerencia"],
   materialsView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
+  lineCatalogView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
   configView: ["super_admin", "jefe_logistico"]
 };
 
 const aliases = {
   ref:["referencia","material","codigo","código","codigomaterial","codigo material","articulo","artículo","sku","ref"],
-  desc:["descripcion","descripción","texto breve","nombre","producto","denominacion","denominación","detalle"],
+  desc:["descripcion","descripción","desc item","desc. item","descitem","texto breve","nombre","producto","denominacion","denominación","detalle","descripcion item","descripción item","nombre material"],
   category:["categoria","categoría","grupo","familia","linea","línea","clase"],
   location:["ubicacion","ubicación","almacen","almacén","bodega","localizacion","localización","posicion","posición","estante"],
   unit:["unidad","um","umb","unidad medida","unidad de medida"],
   stock:["stock","existencia","existencias","cantidad","saldo","disponible","libre utilizacion","libre utilización","inventario"],
-  cost:["costo","costo unitario","valor unitario","precio","vlr unitario","costounitario"],
-  totalValue:["valor total","costo total","valor inventario","vlr total","total"],
+  cost:["costo","costo unitario","valor unitario","valor unidad","precio","precio unitario","vlr unitario","costounitario","valorunitario","costopromedio","costo promedio"],
+  totalValue:["valor total","costo total","valor inventario","vlr total","valor parcial","valor existencia","valor stock","total"],
   lastMove:["fecha movimiento","fecha ultimo movimiento","fecha último movimiento","fecha ingreso","fecha salida"],
   movement:["salidas","salida","movimiento","consumo","demanda","rotacion","rotación"]
 };
@@ -229,20 +231,18 @@ function cableTaskOpenTasks(){
 }
 
 function isCableMaterial(material){
-  const text = norm([
-    material?.ref,
-    material?.description,
-    material?.category,
-    material?.unit
-  ].join(" "));
-  const keywords = state.settings?.cableKeywords?.length
-    ? state.settings.cableKeywords
-    : [
-      "cable", "conductor", "alambre", "thhn", "thw", "awg", "cobre",
-      "aluminio", "calibre", "encauchetado", "duplex", "triplex",
-      "fotovoltaico", "coaxial", "utp", "fibra", "cordon", "cordón"
-    ];
-  return keywords.some(k => text.includes(norm(k)));
+  if(material?.isCable === true) return true;
+  const cat = catalogMaterial(material?.ref);
+  if(cat?.isCable) return true;
+  const line = norm(material?.catalogLine || material?.category || "");
+  const cableLines = new Set((state.lineCatalog?.cableLineNames || []).map(norm));
+  if(line && cableLines.has(line)) return true;
+  const text = norm([material?.ref, material?.description, material?.category, material?.unit].join(" "));
+  const unit = norm(material?.unit || "");
+  const isMeterUnit = ["m","mt","mts","metro","metros"].includes(unit);
+  const keywords = state.settings?.cableKeywords?.length ? state.settings.cableKeywords : ["cable","conductor","alambre","thhn","thw","awg","mcm","acsr","xlpe","lsfh","lshf","encauchetado","duplex","triplex","cuadruplex","utp","ftp","fibra","coaxial","soldador","retenida"];
+  const hasStrongKeyword = keywords.some(k => text.includes(norm(k)));
+  return Boolean(hasStrongKeyword && (isMeterUnit || text.includes("cable") || text.includes("conductor") || text.includes("alambre")));
 }
 
 function nextMeterSessionDate(){
@@ -438,6 +438,7 @@ async function init(){
       }
 
       await loadSettings();
+      await loadLineCatalog();
       await refreshAll();
       clearTimeout(bootTimeout);
       showApp();
@@ -480,7 +481,8 @@ function setupEvents(){
   $("#createUserForm").addEventListener("submit", createUserFromAdmin);
   $("#refreshUsersBtn").addEventListener("click", loadAndRenderUsers);
   ["#taskSearch", "#taskFilter"].forEach(sel => $(sel).addEventListener("input", renderTasks));
-  ["#materialSearch", "#materialBandFilter", "#materialCableFilter"].forEach(sel => $(sel).addEventListener("input", renderMaterials));
+  ["#materialSearch", "#materialBandFilter", "#materialCableFilter"].forEach(sel => $(sel)?.addEventListener("input", renderMaterials));
+  ["#lineSearch", "#lineCableFilter"].forEach(sel => $(sel)?.addEventListener("input", renderLineCatalog));
   $("#saveSettingsBtn").addEventListener("click", saveSettingsFromUI);
   $("#closeCountDialog").addEventListener("click", () => $("#countDialog").close());
   $("#cancelCountBtn").addEventListener("click", () => $("#countDialog").close());
@@ -530,6 +532,38 @@ async function loadSettings(){
     state.initWarnings.push({ label:"settings/inventory", message:err?.message || String(err) });
   }
 }
+
+async function loadLineCatalog(){
+  try{
+    const res = await fetch("./lineas_catalog.json", { cache:"no-store" });
+    if(!res.ok) throw new Error(`lineas_catalog.json respondió ${res.status}`);
+    state.lineCatalog = await res.json();
+    console.info("Catálogo de líneas cargado", state.lineCatalog?.totals || {});
+  }catch(err){
+    console.warn("No se pudo cargar lineas_catalog.json. Se usará clasificación por palabras clave.", err);
+    state.lineCatalog = { materials:{}, lines:[], totals:{}, cableLineNames:[] };
+  }
+}
+function catalogMaterial(ref){
+  const key = String(ref || "").trim();
+  if(!key) return null;
+  return state.lineCatalog?.materials?.[key] || state.lineCatalog?.materials?.[key.replace(/^0+/,"")] || null;
+}
+function enrichMaterialFromCatalog(base){
+  const cat = catalogMaterial(base.ref);
+  if(!cat) return { ...base, catalogFound:false };
+  return {
+    ...base,
+    description: base.description || cat.description || "",
+    category: base.category || cat.line || "",
+    unit: base.unit || cat.unit || "",
+    catalogLine: cat.line || "",
+    catalogFound: true,
+    cableReason: cat.cableReason || base.cableReason || "",
+    isCable: Boolean(base.isCable || cat.isCable)
+  };
+}
+
 async function refreshAll(){
   state.initWarnings = [];
   await safeLoad("materials", loadMaterials);
@@ -624,6 +658,7 @@ function setView(viewId){
     auditoriaView:["Auditoría interna","Contabilización independiente e informe."],
     gerenciaView:["Gerencia","Revisión y aprobación final."],
     materialsView:["Materiales","Catálogo consolidado desde SIESA."],
+    lineCatalogView:["Líneas / Cables","Tabla base para completar nombres y clasificar metraje de cables."],
     indicatorsView:["Indicadores","Cobertura anual, calidad de conteo, diferencias, metraje y productividad."],
     configView:["Configuración","Parámetros de agenda, Pareto y metraje."]
   };
@@ -661,7 +696,7 @@ window.toggleUser = toggleUser;
 window.resetPassword = resetPassword;
 
 function renderAll(){
-  renderKpis(); renderDashboard(); renderTasks(); renderCableTasks(); renderCases(); renderMaterials(); renderSettings(); if(isSuper()) renderUsers();
+  renderKpis(); renderDashboard(); renderTasks(); renderCableTasks(); renderCases(); renderMaterials(); renderSettings(); renderLineCatalog(); if(isSuper()) renderUsers();
 }
 function renderKpis(){
   const today = todayISO();
@@ -684,6 +719,10 @@ function renderKpis(){
   if(annualEl) annualEl.textContent = active.length ? `${Math.round(countedYear / active.length * 100)}%` : "0%";
   if(meterEl) meterEl.textContent = cables.length ? `${Math.round(meterDone / cables.length * 100)}%` : "0%";
   if(targetEl) targetEl.textContent = fmt(annualDailyTarget(pendingYear, Number(state.settings.dailyLimit || 30)));
+  const pendingValueEl = $("#kpiPendingValue");
+  const countedValueEl = $("#kpiCountedValue");
+  if(pendingValueEl) pendingValueEl.textContent = money(active.filter(m => !wasCountedThisYear(m)).reduce((s,m)=>s+Number(m.inventoryValue||0),0));
+  if(countedValueEl) countedValueEl.textContent = money(active.filter(wasCountedThisYear).reduce((s,m)=>s+Number(m.inventoryValue||0),0));
 }
 
 function renderDashboard(){
@@ -692,6 +731,7 @@ function renderDashboard(){
   const countedYear = state.materials.filter(m => m.active !== false && wasCountedThisYear(m)).length;
   const pendingYear = Math.max(0, state.materials.filter(m => m.active !== false).length - countedYear);
   const dailyNeeded = annualDailyTarget(pendingYear, Number(state.settings.dailyLimit || 30));
+  const pendingValue = state.materials.filter(m => m.active !== false && !wasCountedThisYear(m)).reduce((s,m)=>s+Number(m.inventoryValue||0),0);
   const cables = state.materials.filter(m => m.isCable || isCableMaterial(m)).length;
   const countedCablesYear = state.materials.filter(m => (m.isCable || isCableMaterial(m)) && wasMeterCountedThisYear(m)).length;
   const remainingCablesYear = Math.max(0, cables - countedCablesYear);
@@ -704,6 +744,7 @@ function renderDashboard(){
     `<div class="summary-item"><span>Pendientes generales del año</span><b>${fmt(pendingYear)}</b></div>` +
     `<div class="summary-item"><span>Días hábiles restantes hasta 31 de diciembre</span><b>${fmt(countWorkdaysUntilYearEnd(todayISO()))}</b></div>` +
     `<div class="summary-item"><span>Meta obligatoria diaria</span><b>${fmt(dailyNeeded)}/día</b></div>` +
+    `<div class="summary-item"><span>Valor pendiente por contar</span><b>${money(pendingValue)}</b></div>` +
     `<div class="summary-item"><span>Cables pendientes de metraje anual</span><b>${fmt(remainingCablesYear)}</b></div>` +
     `<div class="summary-item"><span>Metrajes por sesión de 15 días</span><b>${fmt(cablePerSession)}</b></div>`;
 
@@ -749,9 +790,9 @@ function renderCableTasks(){
   const lastSession = state.cableSession?.lastSessionDate || "";
   const nextSession = nextCableSessionDateFrom(lastSession);
   const isOpen = openRows.length > 0 || !lastSession || today >= nextSession;
-  const totalCables = state.materials.filter(m => m.isCable).length;
-  const counted = state.materials.filter(m => m.isCable && lastCableCountYear(m) === yearOf(today)).length;
-  const mature = state.materials.filter(m => m.isCable && isCableMature(m, today) && lastCableCountYear(m) !== yearOf(today)).length;
+  const totalCables = state.materials.filter(m => isCableMaterial(m)).length;
+  const counted = state.materials.filter(m => isCableMaterial(m) && lastCableCountYear(m) === yearOf(today)).length;
+  const mature = state.materials.filter(m => isCableMaterial(m) && isCableMature(m, today) && lastCableCountYear(m) !== yearOf(today)).length;
   const notice = !isOpen
     ? `<div class="notice"><b>Módulo bloqueado:</b> la próxima sesión aleatoria de metraje se habilita el <b>${esc(nextSession)}</b>. Cables pendientes del año: <b>${fmt(Math.max(0,totalCables-counted))}</b>. Cables maduros disponibles: <b>${fmt(mature)}</b>.</div>`
     : `<div class="notice"><b>Módulo habilitado:</b> sesión aleatoria de metraje. No usa criticidad ni Pareto; excluye cables recién ingresados o cortados hasta cumplir <b>${fmt(state.settings.cableCooldownDays || 15)} días</b>.</div>`;
@@ -760,7 +801,7 @@ function renderCableTasks(){
 }
 function taskTable(rows, cable = false){
   if(!rows.length) return `<div class="empty">No hay tareas abiertas.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Referencia</th><th>Descripción</th><th>Ubicación</th><th>Banda</th><th>${cable ? "Metros sistema" : "Stock"}</th><th>Tipo</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${rows.map(t => `<tr><td>${esc(t.scheduledDate || "")}</td><td><b>${esc(t.materialRef)}</b></td><td>${esc(t.description || "")}</td><td>${esc(t.location || "")}</td><td><span class="pill dark">${esc(t.band || "")}</span></td><td>${fmt(t.systemQty)}</td><td>${esc(t.taskType || t.type || "general")}</td><td>${statusPill(t.status)}</td><td><div class="row-actions">${["assigned","recount_required","pending_inventory"].includes(t.status) ? `<button class="tiny" data-count-task="${esc(t.id)}">Registrar</button>` : ""}${t.status === "pending_jefe_approval" && hasAny(["jefe_logistico"]) ? `<button class="tiny blue" data-approve-task="${esc(t.id)}">Aprobar</button>` : ""}</div></td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Referencia</th><th>Descripción</th><th>Ubicación</th><th>Banda</th><th>${cable ? "Metros sistema" : "Stock"}</th><th>Costo</th><th>Valor</th><th>Tipo</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${rows.map(t => `<tr><td>${esc(t.scheduledDate || "")}</td><td><b>${esc(t.materialRef)}</b></td><td>${esc(t.description || "")}</td><td>${esc(t.location || "")}</td><td><span class="pill dark">${esc(t.band || "")}</span></td><td>${fmt(t.systemQty)}</td><td>${money(t.unitCost || 0)}</td><td>${money(t.inventoryValue || ((t.unitCost || 0) * (t.systemQty || 0)))}</td><td>${esc(t.taskType || t.type || "general")}</td><td>${statusPill(t.status)}</td><td><div class="row-actions">${["assigned","recount_required","pending_inventory"].includes(t.status) ? `<button class="tiny" data-count-task="${esc(t.id)}">Registrar</button>` : ""}${t.status === "pending_jefe_approval" && hasAny(["jefe_logistico"]) ? `<button class="tiny blue" data-approve-task="${esc(t.id)}">Aprobar</button>` : ""}</div></td></tr>`).join("")}</tbody></table></div>`;
 }
 function bindTaskButtons(){
   $$('[data-count-task]').forEach(btn => btn.addEventListener("click", () => openTaskCountDialog(btn.dataset.countTask)));
@@ -791,11 +832,28 @@ function renderMaterials(){
   let rows = [...state.materials].sort((a,b) => (b.score || 0) - (a.score || 0));
   if(q) rows = rows.filter(m => [m.ref,m.description,m.location,m.category].some(v => norm(v).includes(q)));
   if(band) rows = rows.filter(m => m.band === band);
-  if(cable === "cable") rows = rows.filter(m => m.isCable);
+  if(cable === "cable") rows = rows.filter(m => isCableMaterial(m));
   rows = rows.slice(0, 1000);
   if(!rows.length){ $("#materialsTable").innerHTML = `<div class="empty">No hay materiales para mostrar.</div>`; return; }
-  $("#materialsTable").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Referencia</th><th>Descripción</th><th>Ubicación</th><th>Stock</th><th>Costo</th><th>Valor</th><th>Banda</th><th>Frecuencia</th><th>Próximo general</th><th>Cable</th><th>Disponible metraje</th><th>Próximo metraje</th></tr></thead><tbody>${rows.map(m => `<tr><td><b>${esc(m.ref)}</b></td><td>${esc(m.description || "")}</td><td>${esc(m.location || "")}</td><td>${fmt(m.stockSystem)}</td><td>${money(m.unitCost)}</td><td>${money(m.inventoryValue)}</td><td><span class="pill dark">${esc(m.band || "")}</span></td><td>${fmt(m.frequency)} jornadas</td><td>${esc(m.nextDueDate || "")}</td><td>${m.isCable ? '<span class="pill blue">Cable</span>' : ''}</td><td>${esc(m.cableAvailableDate || "")}</td><td>${esc(m.nextCableDueDate || "")}</td></tr>`).join("")}</tbody></table></div>`;
+  $("#materialsTable").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Referencia</th><th>Descripción</th><th>Línea</th><th>Ubicación</th><th>Stock</th><th>Costo</th><th>Valor</th><th>Banda</th><th>Cable</th><th>Razón cable</th><th>Disponible metraje</th></tr></thead><tbody>${rows.map(m => `<tr><td><b>${esc(m.ref)}</b></td><td>${esc(m.description || "")}</td><td>${esc(m.catalogLine || m.category || "")}</td><td>${esc(m.location || "")}</td><td>${fmt(m.stockSystem)}</td><td>${money(m.unitCost)}</td><td>${money(m.inventoryValue)}</td><td><span class="pill dark">${esc(m.band || "")}</span></td><td>${isCableMaterial(m) ? '<span class="pill blue">Cable</span>' : '<span class="pill gray">Normal</span>'}</td><td>${esc(m.cableReason || "")}</td><td>${esc(m.cableAvailableDate || "")}</td></tr>`).join("")}</tbody></table></div>`;
 }
+
+function renderLineCatalog(){
+  const el = $("#lineCatalogTable");
+  if(!el) return;
+  const q = norm($("#lineSearch")?.value || "");
+  const f = $("#lineCableFilter")?.value || "";
+  let rows = [...(state.lineCatalog?.lines || [])];
+  if(q) rows = rows.filter(l => [l.line,l.reason].some(v => norm(v).includes(q)));
+  if(f === "cable") rows = rows.filter(l => l.isCableLine);
+  if(f === "normal") rows = rows.filter(l => !l.isCableLine);
+  rows.sort((a,b) => Number(b.isCableLine)-Number(a.isCableLine) || String(a.line).localeCompare(String(b.line)));
+  if(!rows.length){ el.innerHTML = `<div class="empty">No hay líneas para mostrar.</div>`; return; }
+  const totals = state.lineCatalog?.totals || {};
+  el.innerHTML = `<div class="summary-list" style="margin-bottom:12px"><div class="summary-item"><span>Líneas cargadas</span><b>${fmt(totals.lines || rows.length)}</b></div><div class="summary-item"><span>Referencias catálogo</span><b>${fmt(totals.materials || 0)}</b></div><div class="summary-item"><span>Líneas cable</span><b>${fmt(totals.cableLines || 0)}</b></div><div class="summary-item"><span>Referencias cable</span><b>${fmt(totals.cableMaterials || 0)}</b></div></div>` +
+  `<div class="table-wrap"><table><thead><tr><th>Línea</th><th>Tipo</th><th>Referencias</th><th>Refs cable</th><th>% cable</th><th>Razón</th></tr></thead><tbody>${rows.map(l => `<tr><td><b>${esc(l.line || "")}</b></td><td>${l.isCableLine ? '<span class="pill blue">Cable</span>' : '<span class="pill gray">Normal</span>'}</td><td>${fmt(l.total || 0)}</td><td>${fmt(l.cableCount || 0)}</td><td>${fmt(l.cablePercent || 0)}%</td><td>${esc(l.reason || "")}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
 function renderSettings(){
   if(!$("#setDailyLimit")) return;
   $("#setDailyLimit").value = state.settings.dailyLimit;
@@ -835,6 +893,9 @@ function renderIndicators(){
   const total = state.materials.filter(m => m.active !== false).length;
   const counted = state.materials.filter(m => m.active !== false && wasCountedThisYear(m)).length;
   const pending = Math.max(0, total - counted);
+  const pendingValue = state.materials.filter(m => m.active !== false && !wasCountedThisYear(m)).reduce((s,m)=>s+Number(m.inventoryValue||0),0);
+  const countedValue = state.materials.filter(m => m.active !== false && wasCountedThisYear(m)).reduce((s,m)=>s+Number(m.inventoryValue||0),0);
+  const totalValue = state.materials.filter(m => m.active !== false).reduce((s,m)=>s+Number(m.inventoryValue||0),0);
   const dailyTarget = annualDailyTarget(pending, Number(state.settings.dailyLimit || 30));
   const cables = state.materials.filter(m => m.active !== false && isCableMaterial(m));
   const meterDone = cables.filter(wasMeterCountedThisYear).length;
@@ -848,6 +909,9 @@ function renderIndicators(){
     <div class="summary-item"><span>Contados en el año</span><b>${fmt(counted)}</b></div>
     <div class="summary-item"><span>Pendientes del año</span><b>${fmt(pending)}</b></div>
     <div class="summary-item"><span>Meta diaria calculada</span><b>${fmt(dailyTarget)}</b></div>
+    <div class="summary-item"><span>Valor total inventario</span><b>${money(totalValue)}</b></div>
+    <div class="summary-item"><span>Valor pendiente por contar</span><b>${money(pendingValue)}</b></div>
+    <div class="summary-item"><span>Valor contado/verificado</span><b>${money(countedValue)}</b></div>
     <div class="summary-item"><span>Cobertura anual general</span><b>${total ? Math.round(counted/total*100) : 0}%</b></div>
     <div class="summary-item"><span>Cables identificados</span><b>${fmt(cables.length)}</b></div>
     <div class="summary-item"><span>Metrajes hechos en el año</span><b>${fmt(meterDone)}</b></div>
@@ -1162,20 +1226,31 @@ function normalizeMaterial(row){
   const stock = num(getByAliases(row, aliases.stock));
   const unitCost = num(getByAliases(row, aliases.cost));
   const totalValue = num(getByAliases(row, aliases.totalValue));
-  const description = String(getByAliases(row, aliases.desc) || "").trim();
-  const category = String(getByAliases(row, aliases.category) || "").trim();
-  const unit = String(getByAliases(row, aliases.unit) || "").trim();
+  let description = String(getByAliases(row, aliases.desc) || "").trim();
+  let category = String(getByAliases(row, aliases.category) || "").trim();
+  let unit = String(getByAliases(row, aliases.unit) || "").trim();
+  let location = String(getByAliases(row, aliases.location) || "").trim();
+
+  let base = { ref, id:safeId(ref), description, category, location, unit };
+  base = enrichMaterialFromCatalog(base);
+  description = base.description || description;
+  category = base.category || category;
+  unit = base.unit || unit;
+
   const joined = norm(`${ref} ${description} ${category} ${unit}`);
   const isMeterUnit = ["m","mt","mts","metro","metros"].includes(norm(unit));
-  const isCable = state.settings.cableKeywords.some(k => joined.includes(norm(k))) || (isMeterUnit && (joined.includes("cable") || joined.includes("conductor")));
+  const keywordCable = (state.settings.cableKeywords || []).some(k => joined.includes(norm(k))) || joined.includes("cable") || joined.includes("conductor") || joined.includes("alambre");
+  const isCable = Boolean(base.isCable || (keywordCable && (isMeterUnit || joined.includes("cable") || joined.includes("conductor") || joined.includes("alambre"))));
+
   return {
-    ref, id:safeId(ref), description, category,
-    location:String(getByAliases(row, aliases.location) || "").trim(), unit,
+    ref, id:safeId(ref), description, category, catalogLine:base.catalogLine || category,
+    location, unit,
     stockSystem:stock, unitCost, inventoryValue: totalValue || stock * unitCost,
     sourceMovement:num(getByAliases(row, aliases.movement)), sourceLastMoveDate:toISO(getByAliases(row, aliases.lastMove)),
-    isCable, active:true
+    isCable, cableReason:base.cableReason || (isCable ? "palabras_clave" : "material_normal"), catalogFound:Boolean(base.catalogFound), active:true
   };
 }
+
 async function processSiesaMaterials(incoming, file, rowsRead){
   const existingSnap = await getDocs(query(collection(db, "materials"), limit(7000)));
   const existingMap = new Map(existingSnap.docs.map(d => [d.data().ref, { id:d.id, ...d.data() }]));
@@ -1220,12 +1295,13 @@ async function processSiesaMaterials(incoming, file, rowsRead){
     ...m,
     nextDueDate: "",
     frequency: 0,
-    cableAvailableDate: m.isCable ? cableAvailableDate(m) : "",
+    cableAvailableDate: isCableMaterial(m) ? cableAvailableDate(m) : "",
     nextCableDueDate: ""
   }));
 
   await batchSet("materials", finalMaterials.map(m => ({ id:m.id || safeId(m.ref), data:compactMaterial(m) })));
   state.materials = finalMaterials;
+  await refreshOpenTasksFromMaterials(finalMaterials);
   await loadTasks();
 
   await addDoc(collection(db, "syncLogs"), {
@@ -1287,6 +1363,9 @@ function compactMaterial(m){
     ref:m.ref,
     description:m.description || "",
     category:m.category || "",
+    catalogLine:m.catalogLine || m.category || "",
+    catalogFound:Boolean(m.catalogFound),
+    cableReason:m.cableReason || "",
     location:m.location || "",
     unit:m.unit || "",
     stockSystem:Number(m.stockSystem || 0),
@@ -1322,6 +1401,39 @@ function compactMaterial(m){
   };
 }
 
+
+async function refreshOpenTasksFromMaterials(materials){
+  try{
+    const map = new Map(materials.map(m => [m.ref, m]));
+    const snap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned","recount_required","pending_inventory","pending_jefe_approval","pending_jefe_logistico"]), limit(1500)));
+    let batch = writeBatch(db);
+    let count = 0;
+    for(const d of snap.docs){
+      const t = d.data();
+      const m = map.get(t.materialRef);
+      if(!m) continue;
+      batch.set(d.ref, {
+        description:m.description || t.description || "",
+        category:m.category || t.category || "",
+        catalogLine:m.catalogLine || m.category || t.catalogLine || "",
+        unit:m.unit || t.unit || "",
+        isCable:isCableMaterial(m),
+        unitCost:Number(m.unitCost || t.unitCost || 0),
+        inventoryValue:Number(m.inventoryValue || (Number(m.unitCost||0) * Number(m.stockSystem||0)) || t.inventoryValue || 0),
+        systemQty:Number(m.stockSystem || t.systemQty || 0),
+        band:m.band || t.band || "",
+        updatedAt:nowTS()
+      }, { merge:true });
+      count++;
+      if(count >= 400){ await batch.commit(); batch = writeBatch(db); count = 0; }
+    }
+    if(count > 0) await batch.commit();
+    if(snap.size) logSync(`Tareas abiertas enriquecidas con nombres/costos: ${snap.size}.`);
+  }catch(err){
+    console.warn("No se pudieron actualizar tareas abiertas con el catálogo", err);
+  }
+}
+
 async function batchSet(colName, items){
   let batch = writeBatch(db), count = 0;
   for(const item of items){ batch.set(doc(db, colName, item.id), item.data, { merge:true }); count++; if(count >= 430){ await batch.commit(); batch = writeBatch(db); count = 0; } }
@@ -1333,7 +1445,7 @@ function taskPriority(m){
   return overdue * 100 + bandWeight + Math.min(Number(m.score || 0)/100000, 500);
 }
 function makeTask(m, extra = {}){
-  return { materialRef:m.ref, materialId:m.id || safeId(m.ref), description:m.description || "", location:m.location || "", band:m.band || "", frequency:Number(m.frequency || 120), systemQty:Number(m.stockSystem || 0), scheduledDate:extra.scheduledDate || todayISO(), taskType:extra.taskType || extra.type || "general", status:extra.status || "assigned", priority:Number(extra.priority || taskPriority(m)), recountRound:Number(extra.recountRound || 0), origin:extra.origin || "agenda", syncLogId:extra.syncLogId || "", createdAt:nowTS(), createdByUid:state.user?.uid || "", createdByEmail:state.user?.email || "" };
+  return { materialRef:m.ref, materialId:m.id || safeId(m.ref), description:m.description || "", location:m.location || "", category:m.category || "", catalogLine:m.catalogLine || m.category || "", unit:m.unit || "", isCable:Boolean(m.isCable), unitCost:Number(m.unitCost || 0), inventoryValue:Number(m.inventoryValue || 0), band:m.band || "", frequency:Number(m.frequency || 120), systemQty:Number(m.stockSystem || 0), scheduledDate:extra.scheduledDate || todayISO(), taskType:extra.taskType || extra.type || "general", status:extra.status || "assigned", priority:Number(extra.priority || taskPriority(m)), recountRound:Number(extra.recountRound || 0), origin:extra.origin || "agenda", syncLogId:extra.syncLogId || "", createdAt:nowTS(), createdByUid:state.user?.uid || "", createdByEmail:state.user?.email || "" };
 }
 async function createInitialSampleTasks(materials, syncLogId){
   const today = todayISO();
@@ -2216,7 +2328,7 @@ async function forceCableMeterTasks(showToast = true){
   }
 
   const year = yearOf(today);
-  const allCables = state.materials.filter(m => m.active !== false && (m.isCable || isCableMaterial(m)));
+  const allCables = state.materials.filter(m => m.active !== false && isCableMaterial(m));
   const pendingYear = allCables.filter(m => !wasMeterCountedThisYear(m));
   const matured = pendingYear.filter(m => {
     const base = m.lastMovementDate || m.firstSeenDate || "";

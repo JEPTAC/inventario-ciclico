@@ -48,6 +48,7 @@
         <button class="nav-link" data-view="auditoriaView" data-roles="super_admin,auditoria">Auditoría</button>
         <button class="nav-link" data-view="gerenciaView" data-roles="super_admin,gerencia">Gerencia</button>
         <button class="nav-link" data-view="materialsView">Materiales</button>
+        <button class="nav-link" data-view="lineCatalogView">Líneas / Cables</button>
         <button class="nav-link" data-view="indicatorsView">Indicadores</button>
         <button class="nav-link" data-view="configView" data-roles="super_admin,jefe_logistico">Configuración</button>
       </nav>
@@ -74,6 +75,8 @@
           <article class="kpi"><span>Cobertura anual</span><b id="kpiAnnualCoverage">0%</b><small>materiales contados</small></article>
           <article class="kpi"><span>Metraje anual</span><b id="kpiMeterCoverage">0%</b><small>cables medidos</small></article>
           <article class="kpi"><span>Meta diaria</span><b id="kpiDailyTarget">0</b><small>conteos obligatorios</small></article>
+          <article class="kpi"><span>Valor pendiente</span><b id="kpiPendingValue">$0</b><small>por contar en el año</small></article>
+          <article class="kpi"><span>Valor contado</span><b id="kpiCountedValue">$0</b><small>cobertura en pesos</small></article>
         </div>
         <div class="grid two">
           <article class="card"><div class="card-head"><h3>Distribución ABC</h3><span class="tag" id="abcStatusTag">Sin datos</span></div><canvas id="abcChart" width="900" height="330"></canvas></article>
@@ -132,6 +135,17 @@
             <div id="qualityIndicators" class="summary-list"></div>
           </article>
         </div>
+      </section>
+
+
+      <section id="lineCatalogView" class="view">
+        <article class="card">
+          <div class="card-head">
+            <div><h3>Tabla de líneas y clasificación cable</h3><p>Catálogo leído desde lineas.xls para completar nombres y determinar si una referencia pertenece a metraje de cable.</p></div>
+            <div class="filters"><input id="lineSearch" placeholder="Buscar línea o razón"><select id="lineCableFilter"><option value="">Todas</option><option value="cable">Solo cables</option><option value="normal">Solo normales</option></select></div>
+          </div>
+          <div id="lineCatalogTable"></div>
+        </article>
       </section>
 
       <section id="configView" class="view"><div class="grid two"><article class="card"><div class="card-head"><h3>Parámetros</h3><button id="saveSettingsBtn" class="btn primary">Guardar</button></div><div class="config-grid"><label>Límite diario general<input id="setDailyLimit" type="number" min="1" max="80"></label><label>Días activos<input id="setActiveDays" placeholder="1,2,3,4,5"></label><label>Hora auto sync<input id="setAutoHour" type="number" min="0" max="23"></label><label>Hoja Excel<input id="setSheetName"></label><label>Periodo metraje cables<input id="setCablePeriod" type="number" min="1"></label><label>Maduración cable reciente<input id="setCableCooldown" type="number" min="0"></label><label>Límite por sesión cables<input id="setCableLimit" type="number" min="0"></label></div><div id="bandsEditor" class="bands-editor"></div></article><article class="card"><h3>Reglas activas</h3><div class="summary-list"><div class="summary-item"><span>Frecuencias ABC</span><b>10/20/30/60/90/120</b></div><div class="summary-item"><span>Conteo diario</span><b>máximo configurable</b></div><div class="summary-item"><span>Metraje cables</span><b>módulo separado cada 15 días</b></div><div class="summary-item"><span>Selección metraje</span><b>aleatoria, sin criticidad</b></div><div class="summary-item"><span>Meta metraje</span><b>100% al 31 de diciembre</b></div><div class="summary-item"><span>Usuario con todos los módulos</span><b>super_admin</b></div></div></article></div></section>
