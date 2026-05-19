@@ -140,3 +140,11 @@ Cambio de lógica principal:
 - Evita repetir cables hasta cubrir el 100% anual.
 - Excluye cables recién ingresados o cortados hasta cumplir maduración.
 - Calcula cables por sesión con: cables pendientes del año / sesiones restantes hasta 31 de diciembre.
+
+
+## Versión v16 - Corrección de ejecución
+
+- Corrige el error `isActiveCountingDay is not defined`.
+- Agrega alias internos para compatibilidad con la agenda anual.
+- No requiere cambiar reglas de Firestore frente a la v15.
+- Después de subir esta versión, recargar con Ctrl + F5.

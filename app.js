@@ -133,6 +133,15 @@ function nextActiveDay(iso, activeDays = state.settings.activeCountingDays){
   }
   return d;
 }
+
+// Compatibilidad interna v16: alias usados por la agenda anual.
+function isActiveCountingDay(iso, activeDays = state.settings.activeCountingDays){
+  return isActiveDay(iso, activeDays);
+}
+function nextCalendarDay(iso){
+  return addDays(iso, 1);
+}
+
 function diffDays(aISO, bISO){
   const a = parseISO(aISO), b = parseISO(bISO);
   if(!a || !b) return 0;
