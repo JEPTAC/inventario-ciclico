@@ -169,3 +169,20 @@ Colección principal de tareas:
 
 Campo clave:
 `taskType = conteo_diario_pareto`
+
+
+## Versión v18 - Revisión exhaustiva de la lógica
+
+Cambio estructural:
+
+- Se elimina la agenda operativa por vencimientos.
+- `nextDueDate` y `frequency` ya no controlan el conteo diario.
+- El conteo general se crea todos los días por calendario anual.
+- Calendario general: lunes a viernes hasta el 31 de diciembre.
+- Fórmula: materiales pendientes del año / días hábiles restantes.
+- Selección: aleatoria ponderada por Pareto, con costo, valor, movimiento y variabilidad.
+- No se repite un material hasta que el 100% anual esté cubierto.
+- Material nuevo después de la base inicial se marca automáticamente como contado/verificado por ingreso.
+- En primera sincronización no se auto-cuenta toda la base: se crea agenda obligatoria del día.
+- El panel Inventario muestra `countTasks` con `taskType = conteo_diario_pareto`.
+- Metraje de cables: módulo separado, cada 15 días, selección aleatoria pura, sin Pareto ni criticidad.

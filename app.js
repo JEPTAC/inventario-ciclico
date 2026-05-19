@@ -212,117 +212,67 @@ function toISO(value){
   return "";
 }
 
-function currentYear(){
-  return new Date().getFullYear();
+
+function isWorkdayISO(iso){
+  const d = parseISO(iso);
+  if(!d) return false;
+  const day = d.getDay();
+  return day >= 1 && day <= 5;
 }
-function yearEndISO(year = currentYear()){
-  return `${year}-12-31`;
-}
-function remainingActiveDaysToYearEnd(fromISO = todayISO()){
+function countWorkdaysUntilYearEnd(fromISO = todayISO()){
   let d = fromISO;
   let count = 0;
   let guard = 0;
-  const end = yearEndISO();
+  const end = `${yearOf(fromISO)}-12-31`;
   while(d <= end && guard < 380){
-    if(isActiveCountingDay(d)) count++;
-    d = nextCalendarDay(d);
+    if(isWorkdayISO(d)) count++;
+    d = addDays(d, 1);
     guard++;
   }
   return Math.max(1, count);
-}
-function daysBetweenISO(aISO, bISO){
-  const a = parseISO(aISO), b = parseISO(bISO);
-  if(!a || !b) return 9999;
-  return Math.floor((b - a) / 86400000);
-}
-function annualCountedField(){
-  return `annualCounted_${currentYear()}`;
-}
-function annualMeterCountedField(){
-  return `meterCounted_${currentYear()}`;
-}
-function wasCountedThisYear(material){
-  return material[annualCountedField()] === true || String(material.lastCountDate || "").startsWith(String(currentYear()));
-}
-function wasMeterCountedThisYear(material){
-  return material[annualMeterCountedField()] === true || String(material.lastMeterCountDate || "").startsWith(String(currentYear()));
-}
-function isRecentlyMoved(material, maturationDays = Number(state.settings.movementMaturationDays || 3)){
-  const lastMove = material.lastMovementDate || "";
-  if(!lastMove) return false;
-  return daysBetweenISO(lastMove, todayISO()) < maturationDays;
-}
-function isCableMaterial(material){
-  const s = norm([
-    material.ref,
-    material.description,
-    material.category,
-    material.unit
-  ].join(" "));
-  return [
-    "cable", "conductor", "alambre", "thhn", "thw", "awg", "cobre",
-    "aluminio", "calibre", "encauchetado", "duplex", "triplex",
-    "fotovoltaico", "coaxial", "utp", "fibra", "cordon", "cordón"
-  ].some(k => s.includes(norm(k)));
 }
 function annualDailyTarget(totalPending, dailyLimit = Number(state.settings.dailyLimit || 30)){
-  const remaining = remainingActiveDaysToYearEnd();
-  return Math.min(dailyLimit, Math.max(1, Math.ceil(totalPending / remaining)));
+  const remaining = countWorkdaysUntilYearEnd(todayISO());
+  if(Number(totalPending || 0) <= 0) return 0;
+  return Math.min(Math.max(1, Number(dailyLimit || 30)), Math.max(1, Math.ceil(Number(totalPending || 0) / remaining)));
 }
-function nextMeterSessionDate(){
-  const start = `${currentYear()}-01-01`;
-  const every = Number(state.settings.cableMeterDays || state.settings.meterModuleDays || 15);
-  let d = start;
-  while(d < todayISO()){
-    d = addActiveDays(d, every);
-  }
-  return d;
+function annualFieldName(){
+  return `annualCounted_${yearOf(todayISO())}`;
 }
-function isMeterSessionOpen(){
-  const every = Number(state.settings.cableMeterDays || state.settings.meterModuleDays || 15);
-  const today = todayISO();
-  const start = `${currentYear()}-01-01`;
-  let d = start;
-  let guard = 0;
-  while(d < today && guard < 400){
-    d = addActiveDays(d, every);
-    guard++;
-  }
-  return d === today;
+function meterFieldName(){
+  return `meterCounted_${yearOf(todayISO())}`;
 }
-function meterSessionsRemaining(){
-  const every = Number(state.settings.cableMeterDays || state.settings.meterModuleDays || 15);
-  let d = todayISO();
-  let count = 0;
-  let guard = 0;
-  const end = yearEndISO();
-  while(d <= end && guard < 400){
-    if(d === todayISO() || isActiveCountingDay(d)) count++;
-    d = addActiveDays(d, every);
-    guard++;
-  }
-  return Math.max(1, count);
+function wasCountedThisYear(material){
+  return material[annualFieldName()] === true || String(material.lastCountDate || "").startsWith(String(yearOf(todayISO())));
 }
-function paretoRandomNoRepeat(materials, seedText, options = {}){
-  const includeWeak = options.includeWeak !== false;
-  const baseSeed = hash(`${seedText}-${currentYear()}`);
+function wasMeterCountedThisYear(material){
+  return material[meterFieldName()] === true || String(material.lastCableCountDate || material.lastMeterCountDate || "").startsWith(String(yearOf(todayISO())));
+}
+function isNewAutoCountedMaterial(material){
+  return material.autoCountedReason === "nuevo_registro_siesa" && wasCountedThisYear(material);
+}
+function paretoWeightedAnnualSelection(materials, seedText){
+  const seed = hash(`${seedText}-${yearOf(todayISO())}`);
   return [...materials]
     .map(m => {
-      const random = hash(`${baseSeed}-${m.ref}`) / 4294967295;
-      const pareto = Math.log10(Math.max(Number(m.score || m.inventoryValue || 1), 1));
-      const band = { "A+": 12, "A": 9, "B": 6, "C": 4, "D": 2, "E": 1 }[m.band] || 1;
-      const movement = Math.min(Number(m.movementIndex || 0), 30) / 5;
-      const variability = Math.min(Number(m.variabilityIndex || 0), 100) / 20;
-      const annualGap = wasCountedThisYear(m) ? -100000 : 0;
-      const weakNoise = includeWeak ? random * 100 : 0;
+      const random = hash(`${seed}-${m.ref}`) / 4294967295;
+      const scoreBase = Math.log10(Math.max(Number(m.score || m.inventoryValue || 1), 1));
+      const bandWeight = { "A+": 12, "A": 9, "B": 7, "C": 5, "D": 3, "E": 1 }[m.band] || 1;
+      const moveWeight = Math.min(Number(m.movementIndex || 0), 50) / 4;
+      const variabilityWeight = Math.min(Number(m.variabilityIndex || 0), 200) / 25;
       return {
         item: m,
-        rank: annualGap + weakNoise + pareto * 8 + band * 4 + movement + variability
+        rank: random * 100 + scoreBase * 9 + bandWeight * 5 + moveWeight + variabilityWeight
       };
     })
     .sort((a,b) => b.rank - a.rank)
     .map(x => x.item);
 }
+
+function paretoRandomNoRepeat(materials, seedText, options = {}){
+  return paretoWeightedAnnualSelection(materials, seedText);
+}
+
 
 function norm(s){
   return String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]/g,"");
@@ -576,39 +526,51 @@ function renderAll(){
 }
 function renderKpis(){
   const today = todayISO();
-  $("#kpiMaterials").textContent = fmt(state.materials.length);
-  $("#kpiTodayTasks").textContent = fmt(state.tasks.filter(t => (t.scheduledDate || "") <= today).length);
-  $("#kpiCables").textContent = fmt(state.materials.filter(m => m.isCable).length);
+  const active = state.materials.filter(m => m.active !== false);
+  const countedYear = active.filter(wasCountedThisYear).length;
+  const pendingYear = Math.max(0, active.length - countedYear);
+  const cables = active.filter(m => m.isCable || isCableMaterial(m));
+  const meterDone = cables.filter(wasMeterCountedThisYear).length;
+
+  $("#kpiMaterials").textContent = fmt(active.length);
+  $("#kpiTodayTasks").textContent = fmt(state.tasks.filter(t => (t.scheduledDate || "") === today && ["assigned","pending_inventory","recount_required"].includes(t.status)).length);
+  $("#kpiCables").textContent = fmt(cables.length);
   $("#kpiJefeCases").textContent = fmt(state.cases.filter(c => ["pending_jefe_logistico","pending_jefe_approval"].includes(c.status)).length);
   $("#kpiAuditCases").textContent = fmt(state.cases.filter(c => c.status === "pending_auditoria").length);
   $("#kpiGerenciaCases").textContent = fmt(state.cases.filter(c => c.status === "pending_gerencia").length);
+
+  const annualEl = $("#kpiAnnualCoverage");
+  const meterEl = $("#kpiMeterCoverage");
+  const targetEl = $("#kpiDailyTarget");
+  if(annualEl) annualEl.textContent = active.length ? `${Math.round(countedYear / active.length * 100)}%` : "0%";
+  if(meterEl) meterEl.textContent = cables.length ? `${Math.round(meterDone / cables.length * 100)}%` : "0%";
+  if(targetEl) targetEl.textContent = fmt(annualDailyTarget(pendingYear, Number(state.settings.dailyLimit || 30)));
 }
+
 function renderDashboard(){
   const bands = groupBy(state.materials, m => m.band || "E");
   const total = state.materials.length || 1;
-  $("#abcStatusTag").textContent = state.materials.length ? `${fmt(state.materials.length)} materiales` : "Sin datos";
-  const activeDaysYear = 260;
-  const dailyNeeded = Math.ceil((state.materials.length || 0) / activeDaysYear);
-  const cables = state.materials.filter(m => m.isCable).length;
-  const countedCablesYear = state.materials.filter(m => m.isCable && lastCableCountYear(m) === yearOf(todayISO())).length;
+  const countedYear = state.materials.filter(m => m.active !== false && wasCountedThisYear(m)).length;
+  const pendingYear = Math.max(0, state.materials.filter(m => m.active !== false).length - countedYear);
+  const dailyNeeded = annualDailyTarget(pendingYear, Number(state.settings.dailyLimit || 30));
+  const cables = state.materials.filter(m => m.isCable || isCableMaterial(m)).length;
+  const countedCablesYear = state.materials.filter(m => (m.isCable || isCableMaterial(m)) && wasMeterCountedThisYear(m)).length;
   const remainingCablesYear = Math.max(0, cables - countedCablesYear);
   const remainingSessions = countCableSessionsRemaining(todayISO());
   const cablePerSession = Math.ceil(remainingCablesYear / remainingSessions);
-  $("#agendaSummary").innerHTML = state.settings.bands.map(b => `<div class="summary-item"><span>${esc(b.key)} · ${esc(b.label)} · ${b.frequency} jornadas</span><b>${fmt(bands[b.key]?.length || 0)}</b></div>`).join("") +
-    `<div class="summary-item"><span>Mínimo anual teórico general</span><b>${fmt(dailyNeeded)}/día</b></div>` +
-    `<div class="summary-item"><span>Límite diario configurado</span><b>${fmt(state.settings.dailyLimit)}</b></div>` +
-    `<div class="summary-item"><span>Metraje cables pendiente año actual</span><b>${fmt(remainingCablesYear)}</b></div>` +
-    `<div class="summary-item"><span>Metraje por sesión hasta 31/dic</span><b>${fmt(state.settings.cableSessionLimit || cablePerSession)}</b></div>`;
-  $("#recentActivity").innerHTML = renderRecentActivity();
+
+  $("#abcStatusTag").textContent = state.materials.length ? `${fmt(state.materials.length)} materiales` : "Sin datos";
+  $("#agendaSummary").innerHTML =
+    state.settings.bands.map(b => `<div class="summary-item"><span>${esc(b.key)} · ${esc(b.label)}</span><b>${fmt(bands[b.key]?.length || 0)}</b></div>`).join("") +
+    `<div class="summary-item"><span>Pendientes generales del año</span><b>${fmt(pendingYear)}</b></div>` +
+    `<div class="summary-item"><span>Días hábiles restantes hasta 31 de diciembre</span><b>${fmt(countWorkdaysUntilYearEnd(todayISO()))}</b></div>` +
+    `<div class="summary-item"><span>Meta obligatoria diaria</span><b>${fmt(dailyNeeded)}/día</b></div>` +
+    `<div class="summary-item"><span>Cables pendientes de metraje anual</span><b>${fmt(remainingCablesYear)}</b></div>` +
+    `<div class="summary-item"><span>Metrajes por sesión de 15 días</span><b>${fmt(cablePerSession)}</b></div>`;
+
   drawAbcChart();
 }
-function renderRecentActivity(){
-  const rows = [
-    ...state.syncLogs.slice(0,5).map(l => ({title:`Sincronización: ${l.fileName || driveConfig.fileName}`, sub:`${l.createdByEmail || ""} · ${l.materialsProcessed || 0} materiales · ${formatDateTime(l.createdAt)}`})),
-    ...state.counts.slice(0,6).map(c => ({title:`${c.countType || "conteo"} ${c.materialRef}: ${c.result}`, sub:`Sistema ${fmt(c.systemQty)} / Físico ${fmt(c.countedQty)} · ${c.countedByEmail || ""}`}))
-  ].slice(0,10);
-  return rows.length ? rows.map(r => `<div class="timeline-item"><b>${esc(r.title)}</b><small>${esc(r.sub)}</small></div>`).join("") : `<div class="empty">Sin actividad reciente.</div>`;
-}
+
 function drawAbcChart(){
   const canvas = $("#abcChart"); if(!canvas) return;
   const ctx = canvas.getContext("2d"); ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -632,14 +594,15 @@ function renderUsers(){
 
 function renderTasks(){
   const q = norm($("#taskSearch")?.value || ""), filter = $("#taskFilter")?.value || "";
-  let rows = state.tasks.filter(t => ["general", "recount", "initial_sample"].includes(t.taskType || "general"));
+  let rows = state.tasks.filter(t => (t.taskType || t.type || "general") !== "cable_metraje");
   if(!isSuper() && role() === "inventario") rows = rows.filter(t => ["assigned","recount_required","pending_inventory"].includes(t.status));
   if(filter) rows = rows.filter(t => t.status === filter);
-  if(q) rows = rows.filter(t => [t.materialRef,t.description,t.location,t.band].some(v => norm(v).includes(q)));
+  if(q) rows = rows.filter(t => [t.materialRef,t.description,t.location,t.band,t.taskType,t.origin].some(v => norm(v).includes(q)));
   rows.sort((a,b) => String(a.scheduledDate || "").localeCompare(String(b.scheduledDate || "")) || (b.priority || 0) - (a.priority || 0));
   $("#tasksTable").innerHTML = taskTable(rows);
   bindTaskButtons();
 }
+
 function renderCableTasks(){
   const today = todayISO();
   const rows = state.tasks.filter(t => t.taskType === "cable_metraje").sort((a,b) => String(a.scheduledDate || "").localeCompare(String(b.scheduledDate || "")));
@@ -1030,55 +993,151 @@ function normalizeMaterial(row){
   };
 }
 async function processSiesaMaterials(incoming, file, rowsRead){
-  const existingSnap = await getDocs(query(collection(db, "materials"), limit(6000)));
+  const existingSnap = await getDocs(query(collection(db, "materials"), limit(7000)));
   const existingMap = new Map(existingSnap.docs.map(d => [d.data().ref, { id:d.id, ...d.data() }]));
   const firstSync = existingSnap.empty;
   const today = todayISO();
+  const yearField = annualFieldName();
+
   const prepared = incoming.map(m => {
     const old = existingMap.get(m.ref);
+    const isNewAfterBase = !firstSync && !old;
     const change = old ? Number(m.stockSystem || 0) - Number(old.stockSystem || 0) : 0;
     const absChange = Math.abs(change);
     const movementType = !old ? "nuevo_siesa" : change > 0 ? "ingreso_operativo" : change < 0 ? "salida_operativa" : "sin_movimiento";
     const movementIndex = Number(old?.movementIndex || 0) + (absChange > 0 ? 1 : 0) + Number(m.sourceMovement || 0);
     const variabilityIndex = Number(old?.variabilityIndex || 0) + absChange;
-    return { ...old, ...m, previousStock: old?.stockSystem ?? null, stockChange:change, movementType, movementIndex, variabilityIndex, firstSeenDate:old?.firstSeenDate || today, lastVerifiedDate:(!old || change !== 0) ? today : (old.lastVerifiedDate || today), lastMovementDate:change !== 0 ? today : (old?.lastMovementDate || m.sourceLastMoveDate || ""), sourceFileId:file.id, sourceFileName:file.name, sourceModifiedTime:file.modifiedTime, lastSyncDate:today, updatedAt:nowTS() };
-  });
-  const scored = assignPareto(prepared);
-  const finalMaterials = scored.map(m => {
-    const baseDate = m.lastCountDate || m.lastVerifiedDate || today;
-    const offset = m.lastCountDate ? Number(m.frequency || 120) : 1 + (hash(m.ref) % Number(m.frequency || 120));
-    const cableReadyDate = m.isCable ? cableAvailableDate(m) : "";
+
     return {
+      ...old,
       ...m,
-      nextDueDate:m.nextDueDate && m.lastCountDate ? m.nextDueDate : addActiveDays(baseDate, offset),
-      cableAvailableDate:cableReadyDate,
-      nextCableDueDate:m.isCable ? (lastCableCountYear(m) === yearOf(today) ? startOfNextYearISO(yearOf(today)) : cableReadyDate) : ""
+      previousStock: old?.stockSystem ?? null,
+      stockChange: change,
+      movementType,
+      movementIndex,
+      variabilityIndex,
+      firstSeenDate: old?.firstSeenDate || today,
+      lastVerifiedDate: isNewAfterBase ? today : (old?.lastVerifiedDate || ""),
+      lastMovementDate: change !== 0 ? today : (old?.lastMovementDate || m.sourceLastMoveDate || ""),
+      lastCountDate: isNewAfterBase ? today : (old?.lastCountDate || ""),
+      [yearField]: isNewAfterBase ? true : (old?.[yearField] === true ? true : false),
+      autoCountedReason: isNewAfterBase ? "nuevo_registro_siesa" : (old?.autoCountedReason || ""),
+      sourceFileId: file.id,
+      sourceFileName: file.name,
+      sourceModifiedTime: file.modifiedTime,
+      lastSyncDate: today,
+      nextDueDate: "",
+      frequency: 0,
+      updatedAt: nowTS()
     };
   });
+
+  const finalMaterials = assignPareto(prepared).map(m => ({
+    ...m,
+    nextDueDate: "",
+    frequency: 0,
+    cableAvailableDate: m.isCable ? cableAvailableDate(m) : "",
+    nextCableDueDate: ""
+  }));
+
   await batchSet("materials", finalMaterials.map(m => ({ id:m.id || safeId(m.ref), data:compactMaterial(m) })));
   state.materials = finalMaterials;
   await loadTasks();
-  const logRef = await addDoc(collection(db, "syncLogs"), { fileId:file.id, fileName:file.name, fileModifiedTime:file.modifiedTime, rowsRead, materialsProcessed:finalMaterials.length, firstSync, createdAt:nowTS(), createdByUid:state.user.uid, createdByEmail:state.user.email });
-  if(firstSync) await createInitialSampleTasks(finalMaterials, logRef.id);
-  await loadTasks();
+
+  await addDoc(collection(db, "syncLogs"), {
+    fileId:file.id,
+    fileName:file.name,
+    fileModifiedTime:file.modifiedTime,
+    rowsRead,
+    materialsProcessed:finalMaterials.length,
+    firstSync,
+    newAutoCounted:finalMaterials.filter(m => m.autoCountedReason === "nuevo_registro_siesa" && m[yearField] === true).length,
+    createdAt:nowTS(),
+    createdByUid:state.user.uid,
+    createdByEmail:state.user.email
+  });
+
+  logSync(`Repositorio SIESA actualizado. Primera base: ${firstSync ? "SI" : "NO"}. Nuevos auto-contados: ${finalMaterials.filter(m => m.autoCountedReason === "nuevo_registro_siesa" && m[yearField] === true).length}.`);
   await forceMandatoryDailyTasks(false);
   await loadTasks();
+
   if(isMeterSessionOpen()){
     await forceCableMeterTasks(false);
   }else{
     logSync(`Metraje no corresponde hoy. Próxima sesión: ${nextMeterSessionDate()}.`);
   }
 }
+
 function assignPareto(materials){
-  const scored = materials.map(m => ({ ...m, inventoryValue:Number(m.inventoryValue || 0), score:Number(m.inventoryValue || 0) + Number(m.unitCost || 0)*5 + Number(m.movementIndex || 0)*50000 + Number(m.variabilityIndex || 0)*Math.max(Number(m.unitCost || 1), 1) }));
+  const scored = materials.map(m => ({
+    ...m,
+    inventoryValue:Number(m.inventoryValue || 0),
+    score:
+      Number(m.inventoryValue || 0) * 1.0 +
+      Number(m.unitCost || 0) * 5 +
+      Number(m.movementIndex || 0) * 50000 +
+      Number(m.variabilityIndex || 0) * Math.max(Number(m.unitCost || 1), 1)
+  }));
   const sorted = [...scored].sort((a,b) => (b.score || 0) - (a.score || 0));
-  const n = sorted.length || 1, byRef = new Map();
-  sorted.forEach((m, idx) => { const pct = (idx + 1) / n; const band = state.settings.bands.find(b => pct <= Number(b.limit)) || state.settings.bands[state.settings.bands.length - 1]; byRef.set(m.ref, { ...m, paretoPosition:idx+1, paretoPercentile:pct, band:band.key, frequency:Number(band.frequency) }); });
+  const n = sorted.length || 1;
+  const byRef = new Map();
+  sorted.forEach((m, idx) => {
+    const pct = (idx + 1) / n;
+    const band = state.settings.bands.find(b => pct <= Number(b.limit)) || state.settings.bands[state.settings.bands.length - 1];
+    byRef.set(m.ref, {
+      ...m,
+      paretoPosition:idx + 1,
+      paretoPercentile:pct,
+      band:band.key,
+      frequency:0,
+      nextDueDate:""
+    });
+  });
   return materials.map(m => byRef.get(m.ref));
 }
+
 function compactMaterial(m){
-  return { ref:m.ref, description:m.description || "", category:m.category || "", location:m.location || "", unit:m.unit || "", stockSystem:Number(m.stockSystem || 0), unitCost:Number(m.unitCost || 0), inventoryValue:Number(m.inventoryValue || 0), score:Number(m.score || 0), band:m.band || "E", frequency:Number(m.frequency || 120), movementIndex:Number(m.movementIndex || 0), variabilityIndex:Number(m.variabilityIndex || 0), movementType:m.movementType || "", previousStock:m.previousStock ?? null, stockChange:Number(m.stockChange || 0), firstSeenDate:m.firstSeenDate || todayISO(), lastVerifiedDate:m.lastVerifiedDate || "", lastMovementDate:m.lastMovementDate || "", lastCountDate:m.lastCountDate || "", nextDueDate:m.nextDueDate || "", isCable:Boolean(m.isCable), lastCableCountDate:m.lastCableCountDate || "", cableAvailableDate:m.cableAvailableDate || "", nextCableDueDate:m.nextCableDueDate || "", sourceFileId:m.sourceFileId || "", sourceFileName:m.sourceFileName || "", sourceModifiedTime:m.sourceModifiedTime || "", active:m.active !== false, updatedAt:m.updatedAt || nowTS() };
+  const yField = annualFieldName();
+  const meterField = meterFieldName();
+  return {
+    ref:m.ref,
+    description:m.description || "",
+    category:m.category || "",
+    location:m.location || "",
+    unit:m.unit || "",
+    stockSystem:Number(m.stockSystem || 0),
+    unitCost:Number(m.unitCost || 0),
+    inventoryValue:Number(m.inventoryValue || 0),
+    score:Number(m.score || 0),
+    band:m.band || "E",
+    frequency:0,
+    movementIndex:Number(m.movementIndex || 0),
+    variabilityIndex:Number(m.variabilityIndex || 0),
+    movementType:m.movementType || "",
+    previousStock:m.previousStock ?? null,
+    stockChange:Number(m.stockChange || 0),
+    firstSeenDate:m.firstSeenDate || todayISO(),
+    lastVerifiedDate:m.lastVerifiedDate || "",
+    lastMovementDate:m.lastMovementDate || "",
+    lastCountDate:m.lastCountDate || "",
+    [yField]: m[yField] === true,
+    autoCountedReason:m.autoCountedReason || "",
+    nextDueDate:"",
+    isCable:Boolean(m.isCable),
+    lastCableCountDate:m.lastCableCountDate || "",
+    lastMeterCountDate:m.lastMeterCountDate || "",
+    [meterField]: m[meterField] === true,
+    cableAvailableDate:m.cableAvailableDate || "",
+    nextCableDueDate:"",
+    sourceFileId:m.sourceFileId || "",
+    sourceFileName:m.sourceFileName || "",
+    sourceModifiedTime:m.sourceModifiedTime || "",
+    lastSyncDate:m.lastSyncDate || "",
+    active:m.active !== false,
+    updatedAt:m.updatedAt || nowTS()
+  };
 }
+
 async function batchSet(colName, items){
   let batch = writeBatch(db), count = 0;
   for(const item of items){ batch.set(doc(db, colName, item.id), item.data, { merge:true }); count++; if(count >= 430){ await batch.commit(); batch = writeBatch(db); count = 0; } }
@@ -1138,8 +1197,6 @@ async function createInitialSampleTasks(materials, syncLogId){
 }
 
 async function generateGeneralTasks(showToast = true){
-  // v17: esta función queda como alias por compatibilidad.
-  // La agenda general ya NO se genera por vencidos, sino por Pareto aleatorio anual sin repetición.
   return await forceMandatoryDailyTasks(showToast);
 }
 
@@ -1261,7 +1318,7 @@ function openCaseCountDialog(caseId, mode){
 
 async function forceMandatoryDailyTasks(showToast = true){
   if(!hasAny(["jefe_logistico"])){
-    if(showToast) toast("Solo super admin o jefe logístico pueden crear tareas obligatorias.", "error");
+    if(showToast) toast("Solo super admin o jefe logístico pueden crear el conteo obligatorio.", "error");
     return;
   }
 
@@ -1270,160 +1327,91 @@ async function forceMandatoryDailyTasks(showToast = true){
   await loadTasks();
 
   if(!state.materials.length){
-    logSync("No se pueden crear tareas: Firestore no tiene materiales. Sincroniza primero Excel_siesa.xls.");
+    logSync("No se puede crear conteo obligatorio: no hay materiales. Sincroniza primero Excel_siesa.xls.");
     if(showToast) toast("No hay materiales en Firestore. Primero sincroniza el Excel SIESA.", "error");
     return;
   }
 
-  // Tareas ya existentes de HOY, abiertas o cerradas. Esto evita duplicar cupo si ya se generó agenda.
-  let todayGeneralTasks = [];
+  const active = state.materials.filter(m => m.active !== false);
+  const pendingYear = active.filter(m => !wasCountedThisYear(m));
+  const totalPending = pendingYear.length;
+  const dailyTarget = annualDailyTarget(totalPending, Number(state.settings.dailyLimit || 30));
+
+  let todayTasks = [];
   try{
-    const todaySnap = await getDocs(query(collection(db, "countTasks"), where("scheduledDate", "==", today), limit(1200)));
-    todayGeneralTasks = todaySnap.docs
+    const todaySnap = await getDocs(query(collection(db, "countTasks"), where("scheduledDate", "==", today), limit(1500)));
+    todayTasks = todaySnap.docs
       .map(d => ({ id:d.id, ...d.data() }))
       .filter(t => (t.taskType || t.type || "general") !== "cable_metraje");
   }catch(err){
-    logSync("Aviso: no se pudo consultar tareas del día por fecha exacta; se usará memoria local. " + (err.message || err));
-    todayGeneralTasks = state.tasks.filter(t => (t.scheduledDate || "") === today && (t.taskType || t.type || "general") !== "cable_metraje");
+    logSync("No se pudo consultar agenda exacta del día; se usa memoria local. " + (err.message || err));
+    todayTasks = state.tasks.filter(t => (t.scheduledDate || "") === today && (t.taskType || t.type || "general") !== "cable_metraje");
   }
 
-  const alreadyPlannedToday = todayGeneralTasks.length;
-
-  const openRefs = new Set(
-    state.tasks
-      .filter(t => [
-        "assigned",
-        "pending_inventory",
-        "recount_required",
-        "pending_jefe_approval",
-        "pending_jefe_logistico"
-      ].includes(t.status))
-      .map(t => t.materialRef)
-  );
-
-  for(const t of todayGeneralTasks){
-    if(t.materialRef) openRefs.add(t.materialRef);
+  const alreadyToday = todayTasks.length;
+  if(totalPending <= 0){
+    // 100% cubierto: ahora sí se permite repetición controlada por Pareto.
+    logSync("Cobertura anual general ya está en 100%. Se habilita repetición controlada si se requiere agenda.");
   }
 
-  const activeMaterials = state.materials.filter(m => m.active !== false);
-  const notCountedThisYear = activeMaterials.filter(m => !wasCountedThisYear(m));
-  const yearlyPending = notCountedThisYear.length;
-
-  // Regla v17:
-  // 1. Siempre se intenta llenar el límite diario configurado.
-  // 2. Si el límite es mayor a lo necesario para cerrar el año, se respeta el límite como capacidad operativa.
-  // 3. Si faltan menos materiales que el límite, se asignan solo los pendientes.
-  const dailyLimit = Math.max(1, Number(state.settings.dailyLimit || 30));
-  const neededToFinish = annualDailyTarget(yearlyPending, dailyLimit);
-  const dailyTarget = Math.min(dailyLimit, Math.max(neededToFinish, Math.min(dailyLimit, yearlyPending || dailyLimit)));
-  const room = Math.max(0, dailyTarget - alreadyPlannedToday);
+  const target = totalPending > 0 ? dailyTarget : Math.min(Number(state.settings.dailyLimit || 30), Math.max(1, Math.ceil(active.length / countWorkdaysUntilYearEnd(today))));
+  const room = Math.max(0, target - alreadyToday);
 
   if(room <= 0){
-    logSync(`Agenda general ya creada para hoy: ${alreadyPlannedToday}/${dailyTarget}. Pendientes anuales: ${yearlyPending}.`);
-    if(showToast) toast(`Agenda general ya creada para hoy: ${alreadyPlannedToday}/${dailyTarget}.`);
+    logSync(`Conteo obligatorio ya creado para hoy: ${alreadyToday}/${target}. Pendientes anuales: ${totalPending}.`);
+    if(showToast) toast(`Conteo obligatorio ya creado para hoy: ${alreadyToday}/${target}.`);
     return;
   }
 
-  // Pool principal: no contados en el año, sin tarea abierta, sin movimiento reciente.
-  let eligible = notCountedThisYear
-    .filter(m => !openRefs.has(m.ref))
-    .filter(m => !isRecentlyMoved(m));
+  const refsWithOpenTasks = new Set(
+    state.tasks
+      .filter(t => ["assigned","pending_inventory","recount_required","pending_jefe_approval","pending_jefe_logistico"].includes(t.status))
+      .map(t => t.materialRef)
+  );
+  todayTasks.forEach(t => { if(t.materialRef) refsWithOpenTasks.add(t.materialRef); });
 
-  // Si todos están bloqueados por movimiento o tarea, se relaja la maduración para no dejar el día vacío.
-  if(!eligible.length){
-    logSync("No hay pendientes anuales maduros. Se relaja maduración para garantizar conteo diario.");
-    eligible = notCountedThisYear
-      .filter(m => !openRefs.has(m.ref));
-  }
-
-  // Si ya se completó el año, se permite repetición controlada por Pareto.
+  let pool = pendingYear.filter(m => !refsWithOpenTasks.has(m.ref));
   let repeatMode = false;
-  if(!eligible.length){
-    repeatMode = true;
-    eligible = activeMaterials
-      .filter(m => !openRefs.has(m.ref))
-      .filter(m => !isRecentlyMoved(m));
+
+  if(!pool.length && totalPending > 0){
+    logSync("Hay pendientes anuales, pero todos tienen tarea abierta o ya fueron programados hoy. No se duplican referencias.");
   }
 
-  if(!eligible.length){
+  if(!pool.length && totalPending <= 0){
     repeatMode = true;
-    eligible = activeMaterials.filter(m => !openRefs.has(m.ref));
+    pool = active.filter(m => !refsWithOpenTasks.has(m.ref));
   }
 
-  const selected = paretoRandomNoRepeat(eligible, `GENERAL-${today}`, { includeWeak: true }).slice(0, room);
-
-  if(!selected.length){
-    logSync("No se crearon tareas generales: no hay materiales elegibles incluso en repetición controlada.");
-    if(showToast) toast("No hay materiales elegibles para conteo general.", "error");
+  if(!pool.length){
+    if(showToast) toast("No hay referencias elegibles sin duplicar. Revisa tareas abiertas en countTasks.", "error");
+    logSync("No se crearon tareas: no hay referencias elegibles sin duplicar.");
     return;
   }
+
+  const selected = paretoWeightedAnnualSelection(pool, `CONTEO-GENERAL-${today}`).slice(0, room);
 
   const tasks = selected.map((m, idx) => ({
-    id: `DAY-${today}-${safeId(m.ref)}`,
-    data: makeTask(m, {
-      scheduledDate: today,
-      taskType: repeatMode ? "repeticion_controlada_pareto" : "conteo_diario_pareto",
-      type: repeatMode ? "repeticion_controlada_pareto" : "conteo_diario_pareto",
-      status: "assigned",
-      priority: 100000 - idx,
-      origin: "annual_pareto_no_repeat"
+    id:`GENERAL-${today}-${safeId(m.ref)}`,
+    data:makeTask(m, {
+      scheduledDate:today,
+      taskType:repeatMode ? "repeticion_controlada_pareto" : "conteo_diario_pareto",
+      type:repeatMode ? "repeticion_controlada_pareto" : "conteo_diario_pareto",
+      status:"assigned",
+      priority:100000 - idx,
+      origin:"calendario_anual_pareto"
     })
   }));
 
   await batchSet("countTasks", tasks);
-
-  logSync(`Conteo general obligatorio creado: ${tasks.length}. Ya existían hoy: ${alreadyPlannedToday}. Meta diaria: ${dailyTarget}. Pendientes anuales: ${yearlyPending}. Regla: Pareto aleatorio sin repetición.`);
-  if(showToast) toast(`Conteo general obligatorio creado: ${tasks.length}`);
+  logSync(`Conteo obligatorio creado: ${tasks.length}. Meta de hoy: ${target}. Pendientes anuales: ${totalPending}. Días hábiles restantes: ${countWorkdaysUntilYearEnd(today)}. Método: Pareto aleatorio sin repetición.`);
+  if(showToast) toast(`Conteo obligatorio creado: ${tasks.length}`);
 }
 
 function weightedParetoShuffle(materials, seedText){
-  const seed = hash(seedText);
-  return [...materials]
-    .map(m => {
-      const randomPart = hash(`${seed}-${m.ref}`) / 4294967295;
-      const scorePart = Math.log10(Math.max(Number(m.score || 0), 1));
-      const bandBonus = { "A+": 8, "A": 6, "B": 4, "C": 3, "D": 2, "E": 1 }[m.band] || 1;
-      return {
-        item: m,
-        rank: randomPart * 100 + scorePart * 7 + bandBonus * 3
-      };
-    })
-    .sort((a,b) => b.rank - a.rank)
-    .map(x => x.item);
+  return paretoWeightedAnnualSelection(materials, seedText);
 }
 
 
-async function saveCount(e){
-  e.preventDefault();
-  const mode = $("#countMode").value;
-  if(mode === "task") return await saveTaskCount();
-  return await saveCaseCount(mode);
-}
-async function saveTaskCount(){
-  if(!hasAny(["inventario", "jefe_logistico"])) return toast("No tienes permiso para registrar conteos.", "error");
-  const taskId = $("#countTaskId").value;
-  const task = state.tasks.find(t => t.id === taskId);
-  if(!task) return toast("No se encontró la tarea.", "error");
-  if(role() === "jefe_logistico" && !["recount_required","pending_inventory"].includes(task.status) && task.taskType !== "cable_metraje") return toast("El jefe logístico solo cuenta novedades o metraje.", "error");
-  const payload = buildCountPayload(task);
-  const countRef = await addDoc(collection(db, "counts"), payload);
-  const hasDiff = Math.abs(payload.diff) > 0.0001;
-  if(!hasDiff){
-    await updateDoc(doc(db, "countTasks", taskId), { status:"pending_jefe_approval", lastCountId:countRef.id, updatedAt:nowTS() });
-    await createApprovalCase(task, countRef.id, 0, payload.systemQty);
-    toast("Conteo guardado. Queda pendiente de aprobación del jefe logístico.");
-  }else if(Number(task.recountRound || 0) < 1 && task.taskType !== "cable_metraje"){
-    await createRecountTask(task);
-    await updateDoc(doc(db, "countTasks", taskId), { status:"closed_with_difference_recount_created", lastCountId:countRef.id, updatedAt:nowTS() });
-    toast("Diferencia detectada. Se generó reconteo obligatorio.");
-  }else{
-    await updateDoc(doc(db, "countTasks", taskId), { status:"pending_jefe_logistico", lastCountId:countRef.id, updatedAt:nowTS() });
-    await createPersistentCase(task, countRef.id, payload.diff, payload.systemQty);
-    toast("Diferencia persistente. Caso enviado al jefe logístico.");
-  }
-  $("#countDialog").close();
-  await refreshAll();
-}
 function buildCountPayload(task){
   const systemQty = num($("#countSystemQty").value), countedQty = num($("#countQty").value), diff = countedQty - systemQty;
   return { taskId:task.id, taskType:task.taskType || "general", materialRef:task.materialRef, materialId:task.materialId, description:task.description || "", location:task.location || "", band:task.band || "", date:$("#countDate").value || todayISO(), systemQty, countedQty, diff, absDiff:Math.abs(diff), result:Math.abs(diff) > 0.0001 ? "Diferencia" : "Exacto", cause:$("#countCause").value || "N/A", support:$("#countSupport").value || "", obs:$("#countObs").value || "", countType:task.taskType || "general", countedByRole:role(), countedByUid:state.user.uid, countedByEmail:state.user.email, createdAt:nowTS() };
@@ -1467,13 +1455,35 @@ async function approveTask(taskId){
 }
 async function closeTaskAndReschedule(task, date, comment){
   const matRef = doc(db, "materials", task.materialId || safeId(task.materialRef));
-  const snap = await getDoc(matRef); const mat = snap.exists() ? snap.data() : {};
   const batch = writeBatch(db);
-  batch.update(doc(db, "countTasks", task.id), { status:"closed", closedAt:nowTS(), closedByUid:state.user.uid, closedByEmail:state.user.email, lastComment:comment });
-  if(task.taskType === "cable_metraje") batch.set(matRef, { lastCableCountDate:date, nextCableDueDate:startOfNextYearISO(yearOf(date)), lastVerifiedDate:date, updatedAt:nowTS() }, { merge:true });
-  else batch.set(matRef, { lastCountDate:date, lastVerifiedDate:date, nextDueDate:addActiveDays(date, Number(mat.frequency || task.frequency || 120)), updatedAt:nowTS() }, { merge:true });
+  batch.update(doc(db, "countTasks", task.id), {
+    status:"closed",
+    closedAt:nowTS(),
+    closedByUid:state.user.uid,
+    closedByEmail:state.user.email,
+    lastComment:comment
+  });
+
+  if(task.taskType === "cable_metraje"){
+    batch.set(matRef, {
+      lastCableCountDate:date,
+      lastMeterCountDate:date,
+      [meterFieldName()]:true,
+      lastVerifiedDate:date,
+      updatedAt:nowTS()
+    }, { merge:true });
+  }else{
+    batch.set(matRef, {
+      lastCountDate:date,
+      lastVerifiedDate:date,
+      [annualFieldName()]:true,
+      updatedAt:nowTS()
+    }, { merge:true });
+  }
+
   await batch.commit();
 }
+
 function openCaseDialog(caseId, action){
   const c = state.cases.find(x => x.id === caseId); if(!c) return;
   $("#caseId").value = c.id; $("#caseAction").value = action; $("#caseComment").value = "";
@@ -1613,6 +1623,85 @@ async function forceCableMeterTasks(showToast = true){
   await batchSet("cableMeterTasks", tasks);
   logSync(`Metraje de cables generado: ${tasks.length}. Pendientes año: ${pendingYear.length}. Sesiones restantes: ${sessions}. Selección aleatoria sin criticidad.`);
   if(showToast) toast(`Metraje de cables generado: ${tasks.length}`);
+}
+
+async function forceCableMeterTasks(showToast = true){
+  if(!hasAny(["jefe_logistico"])){
+    if(showToast) toast("Solo super admin o jefe logístico pueden generar metraje.", "error");
+    return;
+  }
+
+  const today = todayISO();
+  await loadMaterials();
+
+  const stateRef = doc(db, "syncState", "cable_metraje");
+  const stateSnap = await getDoc(stateRef);
+  const lastSessionDate = stateSnap.exists() ? (stateSnap.data().lastSessionDate || "") : "";
+  const nextSession = nextCableSessionDateFrom(lastSessionDate);
+
+  // Si ya hay metrajes abiertos, no bloquea: el operario debe terminarlos.
+  const openSnap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned","pending_inventory","recount_required","pending_jefe_approval","pending_jefe_logistico"]), limit(1500)));
+  const openCableTasks = openSnap.docs.map(d => ({ id:d.id, ...d.data() })).filter(t => t.taskType === "cable_metraje");
+  const openCableRefs = new Set(openCableTasks.map(t => t.materialRef));
+
+  if(openCableTasks.length === 0 && lastSessionDate && today < nextSession){
+    logSync(`Metraje bloqueado. Próxima sesión: ${nextSession}.`);
+    if(showToast) toast(`Metraje bloqueado. Próxima sesión: ${nextSession}.`);
+    return;
+  }
+
+  const year = yearOf(today);
+  const allCables = state.materials.filter(m => m.active !== false && (m.isCable || isCableMaterial(m)));
+  const pendingYear = allCables.filter(m => !wasMeterCountedThisYear(m));
+  const matured = pendingYear.filter(m => {
+    const base = m.lastMovementDate || m.firstSeenDate || "";
+    if(!base) return true;
+    return diffDays(base, today) >= Number(state.settings.cableCooldownDays || state.settings.cableMeterMaturationDays || 15);
+  }).filter(m => !openCableRefs.has(m.ref));
+
+  const remainingSessions = countCableSessionsRemaining(today);
+  const target = Math.max(1, Math.ceil(pendingYear.length / remainingSessions));
+
+  if(!allCables.length){
+    logSync("No se identificaron cables desde SIESA.");
+    if(showToast) toast("No se identificaron cables desde SIESA.", "error");
+    return;
+  }
+
+  if(!matured.length){
+    logSync("No hay cables maduros pendientes. No se repite metraje hasta completar condiciones.");
+    if(showToast) toast("No hay cables maduros pendientes para metraje.", "error");
+    return;
+  }
+
+  // Metraje: aleatorio puro, sin criticidad ni Pareto.
+  const selected = [...matured]
+    .map(m => ({ item:m, r:hash(`METRAJE-${year}-${today}-${m.ref}`) }))
+    .sort((a,b) => b.r - a.r)
+    .slice(0, target)
+    .map(x => x.item);
+
+  const tasks = selected.map((m, idx) => ({
+    id:`METER-${today}-${safeId(m.ref)}`,
+    data:makeTask(m, {
+      scheduledDate:today,
+      taskType:"cable_metraje",
+      type:"cable_metraje",
+      status:"assigned",
+      priority:100000 - idx,
+      origin:"metraje_anual_15_dias"
+    })
+  }));
+
+  await batchSet("countTasks", tasks);
+  await setDoc(stateRef, {
+    lastSessionDate:today,
+    nextSessionDate:addDays(today, Number(state.settings.cablePeriodDays || state.settings.cableMeterDays || 15)),
+    updatedAt:nowTS()
+  }, { merge:true });
+
+  logSync(`Metraje creado: ${tasks.length}. Cables pendientes del año: ${pendingYear.length}. Sesiones restantes: ${remainingSessions}. Método: aleatorio puro cada 15 días.`);
+  if(showToast) toast(`Metraje creado: ${tasks.length}`);
 }
 
 
