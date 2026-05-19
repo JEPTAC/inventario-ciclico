@@ -148,3 +148,24 @@ Cambio de lógica principal:
 - Agrega alias internos para compatibilidad con la agenda anual.
 - No requiere cambiar reglas de Firestore frente a la v15.
 - Después de subir esta versión, recargar con Ctrl + F5.
+
+
+## Versión v17 - Regla definitiva de conteo diario
+
+Esta versión elimina la dependencia operativa de los vencimientos para la agenda diaria.
+
+Regla general:
+
+- Todos los días debe haber conteo.
+- La agenda diaria se genera por Pareto aleatorio sin repetición anual.
+- No se repiten materiales hasta cubrir el 100% del año.
+- Si se termina la cobertura anual antes del 31 de diciembre, se habilita repetición controlada por Pareto.
+- Los materiales con movimiento reciente se dejan en maduración, salvo que no haya más materiales disponibles.
+- El botón `Generar conteo obligatorio` llama directamente a la agenda anual por Pareto.
+- Después de sincronizar SIESA también se crea/verifica la agenda obligatoria.
+
+Colección principal de tareas:
+`countTasks`
+
+Campo clave:
+`taskType = conteo_diario_pareto`

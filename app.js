@@ -410,9 +410,9 @@ function setupEvents(){
   $("#connectDriveBtn2").addEventListener("click", () => connectDrive(true));
   $("#quickSyncBtn").addEventListener("click", () => syncFromDrive(false));
   $("#syncDriveBtn").addEventListener("click", () => syncFromDrive(false));
-  $("#generateTodayBtn").addEventListener("click", () => generateGeneralTasks(true));
-  $("#generateCableBtn").addEventListener("click", () => generateCableTasks(true));
-  $("#generateCableBtn2").addEventListener("click", () => generateCableTasks(true));
+  $("#generateTodayBtn").addEventListener("click", () => forceMandatoryDailyTasks(true));
+  $("#generateCableBtn").addEventListener("click", () => forceCableMeterTasks(true));
+  $("#generateCableBtn2").addEventListener("click", () => forceCableMeterTasks(true));
   $("#createUserForm").addEventListener("submit", createUserFromAdmin);
   $("#refreshUsersBtn").addEventListener("click", loadAndRenderUsers);
   ["#taskSearch", "#taskFilter"].forEach(sel => $(sel).addEventListener("input", renderTasks));
@@ -1061,9 +1061,13 @@ async function processSiesaMaterials(incoming, file, rowsRead){
   const logRef = await addDoc(collection(db, "syncLogs"), { fileId:file.id, fileName:file.name, fileModifiedTime:file.modifiedTime, rowsRead, materialsProcessed:finalMaterials.length, firstSync, createdAt:nowTS(), createdByUid:state.user.uid, createdByEmail:state.user.email });
   if(firstSync) await createInitialSampleTasks(finalMaterials, logRef.id);
   await loadTasks();
-  await generateGeneralTasks(false);
+  await forceMandatoryDailyTasks(false);
   await loadTasks();
-  await generateCableTasks(false);
+  if(isMeterSessionOpen()){
+    await forceCableMeterTasks(false);
+  }else{
+    logSync(`Metraje no corresponde hoy. Próxima sesión: ${nextMeterSessionDate()}.`);
+  }
 }
 function assignPareto(materials){
   const scored = materials.map(m => ({ ...m, inventoryValue:Number(m.inventoryValue || 0), score:Number(m.inventoryValue || 0) + Number(m.unitCost || 0)*5 + Number(m.movementIndex || 0)*50000 + Number(m.variabilityIndex || 0)*Math.max(Number(m.unitCost || 1), 1) }));
@@ -1086,7 +1090,7 @@ function taskPriority(m){
   return overdue * 100 + bandWeight + Math.min(Number(m.score || 0)/100000, 500);
 }
 function makeTask(m, extra = {}){
-  return { materialRef:m.ref, materialId:m.id || safeId(m.ref), description:m.description || "", location:m.location || "", band:m.band || "", frequency:Number(m.frequency || 120), systemQty:Number(m.stockSystem || 0), scheduledDate:extra.scheduledDate || todayISO(), taskType:extra.taskType || "general", status:extra.status || "assigned", priority:Number(extra.priority || taskPriority(m)), recountRound:Number(extra.recountRound || 0), origin:extra.origin || "agenda", syncLogId:extra.syncLogId || "", createdAt:nowTS(), createdByUid:state.user?.uid || "", createdByEmail:state.user?.email || "" };
+  return { materialRef:m.ref, materialId:m.id || safeId(m.ref), description:m.description || "", location:m.location || "", band:m.band || "", frequency:Number(m.frequency || 120), systemQty:Number(m.stockSystem || 0), scheduledDate:extra.scheduledDate || todayISO(), taskType:extra.taskType || extra.type || "general", status:extra.status || "assigned", priority:Number(extra.priority || taskPriority(m)), recountRound:Number(extra.recountRound || 0), origin:extra.origin || "agenda", syncLogId:extra.syncLogId || "", createdAt:nowTS(), createdByUid:state.user?.uid || "", createdByEmail:state.user?.email || "" };
 }
 async function createInitialSampleTasks(materials, syncLogId){
   const today = todayISO();
@@ -1134,62 +1138,9 @@ async function createInitialSampleTasks(materials, syncLogId){
 }
 
 async function generateGeneralTasks(showToast = true){
-  if(!hasAny(["jefe_logistico"])) { if(showToast) toast("Solo super admin o jefe logístico pueden generar tareas.", "error"); return; }
-  const today = todayISO();
-  const openSnap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned","recount_required","pending_inventory","pending_jefe_approval"]), limit(900)));
-  const openDocs = openSnap.docs.map(d => ({ id:d.id, ...d.data() }));
-  const openRefs = new Set(openDocs.filter(t => (t.taskType || "general") !== "cable_metraje").map(t => t.materialRef));
-  const openToday = openDocs.filter(t => (t.taskType || "general") !== "cable_metraje" && (t.scheduledDate || "") <= today).length;
-  const room = Math.max(0, Number(state.settings.dailyLimit || 30) - openToday);
-  if(room <= 0){ if(showToast) toast("La capacidad diaria general ya está cubierta."); return; }
-
-  const base = state.materials.filter(m => m.active !== false && !openRefs.has(m.ref));
-  const due = base
-    .filter(m => (m.nextDueDate || "9999-12-31") <= today)
-    .sort((a,b) => taskPriority(b) - taskPriority(a));
-
-  const selected = [];
-  const selectedRefs = new Set();
-  for(const m of due){
-    if(selected.length >= room) break;
-    selected.push({ material:m, forced:false });
-    selectedRefs.add(m.ref);
-  }
-
-  if(selected.length < room){
-    const seed = `GARANTIA_DIARIA-${today}`;
-    const filler = base
-      .filter(m => !selectedRefs.has(m.ref))
-      .filter(m => !(m.lastMovementDate === today && !m.lastCountDate))
-      .map(m => {
-        const neverCounted = m.lastCountDate ? 0 : 50000;
-        const closeDue = Math.max(0, 365 - Math.max(0, diffDays(today, m.nextDueDate || today)));
-        const bandWeight = {"A+":6000,A:5000,B:4000,C:2500,D:1500,E:800}[m.band] || 500;
-        const random = seededRandomScore(`${seed}-${m.ref}`) * 500;
-        return { ...m, guaranteePriority: neverCounted + closeDue + bandWeight + Math.min(Number(m.score || 0)/100000, 800) + random };
-      })
-      .sort((a,b) => b.guaranteePriority - a.guaranteePriority);
-
-    for(const m of filler){
-      if(selected.length >= room) break;
-      selected.push({ material:m, forced:true });
-      selectedRefs.add(m.ref);
-    }
-  }
-
-  if(!selected.length){
-    logSync("No hay materiales disponibles para tareas generales. Posibles causas: todos tienen tarea abierta o están bloqueados por movimiento reciente.");
-    if(showToast) toast("No hay materiales disponibles para generar tareas generales.", "error");
-    return;
-  }
-
-  await batchSet("countTasks", selected.map(({material:m, forced}) => ({
-    id:`TASK-${today}-${forced ? "FORZ" : "DUE"}-${safeId(m.ref)}`,
-    data:makeTask(m,{ scheduledDate:today, taskType:forced ? "garantia_diaria" : "general", status:"assigned", origin:forced ? "daily_mandatory_fill" : "agenda_due" })
-  })));
-
-  logSync(`Tareas generales verificadas: ${selected.length} generadas (${selected.filter(x => x.forced).length} por garantía diaria).`);
-  if(showToast){ toast(`Tareas generales generadas: ${selected.length}`); await refreshAll(); }
+  // v17: esta función queda como alias por compatibilidad.
+  // La agenda general ya NO se genera por vencidos, sino por Pareto aleatorio anual sin repetición.
+  return await forceMandatoryDailyTasks(showToast);
 }
 
 async function generateCableTasks(showToast = true){
@@ -1324,50 +1275,85 @@ async function forceMandatoryDailyTasks(showToast = true){
     return;
   }
 
+  // Tareas ya existentes de HOY, abiertas o cerradas. Esto evita duplicar cupo si ya se generó agenda.
+  let todayGeneralTasks = [];
+  try{
+    const todaySnap = await getDocs(query(collection(db, "countTasks"), where("scheduledDate", "==", today), limit(1200)));
+    todayGeneralTasks = todaySnap.docs
+      .map(d => ({ id:d.id, ...d.data() }))
+      .filter(t => (t.taskType || t.type || "general") !== "cable_metraje");
+  }catch(err){
+    logSync("Aviso: no se pudo consultar tareas del día por fecha exacta; se usará memoria local. " + (err.message || err));
+    todayGeneralTasks = state.tasks.filter(t => (t.scheduledDate || "") === today && (t.taskType || t.type || "general") !== "cable_metraje");
+  }
+
+  const alreadyPlannedToday = todayGeneralTasks.length;
+
   const openRefs = new Set(
     state.tasks
-      .filter(t => ["assigned","pending_inventory","recount_required","pending_jefe_approval","pending_jefe_logistico"].includes(t.status))
+      .filter(t => [
+        "assigned",
+        "pending_inventory",
+        "recount_required",
+        "pending_jefe_approval",
+        "pending_jefe_logistico"
+      ].includes(t.status))
       .map(t => t.materialRef)
   );
 
-  const openToday = state.tasks.filter(t =>
-    ["assigned","pending_inventory","recount_required"].includes(t.status)
-    && (t.scheduledDate || "") <= today
-  ).length;
+  for(const t of todayGeneralTasks){
+    if(t.materialRef) openRefs.add(t.materialRef);
+  }
 
-  const yearlyPending = state.materials
-    .filter(m => m.active !== false)
-    .filter(m => !wasCountedThisYear(m))
-    .length;
+  const activeMaterials = state.materials.filter(m => m.active !== false);
+  const notCountedThisYear = activeMaterials.filter(m => !wasCountedThisYear(m));
+  const yearlyPending = notCountedThisYear.length;
 
-  const suggestedTarget = annualDailyTarget(yearlyPending, Number(state.settings.dailyLimit || 30));
-  const dailyTarget = Math.max(1, Math.min(Number(state.settings.dailyLimit || 30), suggestedTarget));
-  const room = Math.max(0, dailyTarget - openToday);
+  // Regla v17:
+  // 1. Siempre se intenta llenar el límite diario configurado.
+  // 2. Si el límite es mayor a lo necesario para cerrar el año, se respeta el límite como capacidad operativa.
+  // 3. Si faltan menos materiales que el límite, se asignan solo los pendientes.
+  const dailyLimit = Math.max(1, Number(state.settings.dailyLimit || 30));
+  const neededToFinish = annualDailyTarget(yearlyPending, dailyLimit);
+  const dailyTarget = Math.min(dailyLimit, Math.max(neededToFinish, Math.min(dailyLimit, yearlyPending || dailyLimit)));
+  const room = Math.max(0, dailyTarget - alreadyPlannedToday);
 
   if(room <= 0){
-    logSync(`Agenda general cubierta: ${openToday}/${dailyTarget} tareas abiertas. Pendientes año: ${yearlyPending}.`);
-    if(showToast) toast("La agenda general del día ya está cubierta.");
+    logSync(`Agenda general ya creada para hoy: ${alreadyPlannedToday}/${dailyTarget}. Pendientes anuales: ${yearlyPending}.`);
+    if(showToast) toast(`Agenda general ya creada para hoy: ${alreadyPlannedToday}/${dailyTarget}.`);
     return;
   }
 
-  let eligible = state.materials
-    .filter(m => m.active !== false)
+  // Pool principal: no contados en el año, sin tarea abierta, sin movimiento reciente.
+  let eligible = notCountedThisYear
     .filter(m => !openRefs.has(m.ref))
-    .filter(m => !wasCountedThisYear(m))
     .filter(m => !isRecentlyMoved(m));
 
+  // Si todos están bloqueados por movimiento o tarea, se relaja la maduración para no dejar el día vacío.
   if(!eligible.length){
-    logSync("Todos los materiales aptos ya fueron contados en el año o están en maduración. Se habilitará repetición controlada por Pareto si es necesario.");
-    eligible = state.materials
-      .filter(m => m.active !== false)
+    logSync("No hay pendientes anuales maduros. Se relaja maduración para garantizar conteo diario.");
+    eligible = notCountedThisYear
+      .filter(m => !openRefs.has(m.ref));
+  }
+
+  // Si ya se completó el año, se permite repetición controlada por Pareto.
+  let repeatMode = false;
+  if(!eligible.length){
+    repeatMode = true;
+    eligible = activeMaterials
       .filter(m => !openRefs.has(m.ref))
       .filter(m => !isRecentlyMoved(m));
   }
 
-  const selected = paretoRandomNoRepeat(eligible, today, { includeWeak: true }).slice(0, room);
+  if(!eligible.length){
+    repeatMode = true;
+    eligible = activeMaterials.filter(m => !openRefs.has(m.ref));
+  }
+
+  const selected = paretoRandomNoRepeat(eligible, `GENERAL-${today}`, { includeWeak: true }).slice(0, room);
 
   if(!selected.length){
-    logSync("No se crearon tareas generales: no hay materiales elegibles.");
+    logSync("No se crearon tareas generales: no hay materiales elegibles incluso en repetición controlada.");
     if(showToast) toast("No hay materiales elegibles para conteo general.", "error");
     return;
   }
@@ -1376,7 +1362,8 @@ async function forceMandatoryDailyTasks(showToast = true){
     id: `DAY-${today}-${safeId(m.ref)}`,
     data: makeTask(m, {
       scheduledDate: today,
-      type: wasCountedThisYear(m) ? "repeticion_controlada_pareto" : "conteo_diario_pareto",
+      taskType: repeatMode ? "repeticion_controlada_pareto" : "conteo_diario_pareto",
+      type: repeatMode ? "repeticion_controlada_pareto" : "conteo_diario_pareto",
       status: "assigned",
       priority: 100000 - idx,
       origin: "annual_pareto_no_repeat"
@@ -1385,8 +1372,8 @@ async function forceMandatoryDailyTasks(showToast = true){
 
   await batchSet("countTasks", tasks);
 
-  logSync(`Conteo general diario creado: ${tasks.length}. Pendientes año antes de crear: ${yearlyPending}. Meta diaria calculada: ${dailyTarget}. Modo: Pareto aleatorio sin repetición.`);
-  if(showToast) toast(`Conteo general diario creado: ${tasks.length}`);
+  logSync(`Conteo general obligatorio creado: ${tasks.length}. Ya existían hoy: ${alreadyPlannedToday}. Meta diaria: ${dailyTarget}. Pendientes anuales: ${yearlyPending}. Regla: Pareto aleatorio sin repetición.`);
+  if(showToast) toast(`Conteo general obligatorio creado: ${tasks.length}`);
 }
 
 function weightedParetoShuffle(materials, seedText){
