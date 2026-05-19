@@ -53,7 +53,10 @@ const state = {
   counts: [],
   cableSession: null,
   activeView: "dashboardView",
-  autoTimer: null
+  autoTimer: null,
+  deferredInstallPrompt: null,
+  audioCtx: null,
+  notificationsEnabled: localStorage.getItem("inventarioAlertsEnabled") === "1"
 };
 
 function showBootError(message, err = null){
@@ -400,6 +403,7 @@ function groupBy(arr, fn){
 
 async function init(){
   try{
+    registerPWAFeatures();
     setupEvents();
     renderDriveConfig();
   }catch(err){
@@ -484,6 +488,8 @@ function setupEvents(){
   $("#closeCaseDialog").addEventListener("click", () => $("#caseDialog").close());
   $("#cancelCaseBtn").addEventListener("click", () => $("#caseDialog").close());
   $("#caseActionForm").addEventListener("submit", saveCaseAction);
+  $("#copyrightBtn")?.addEventListener("click", () => $("#copyrightDialog").showModal());
+  $("#closeCopyrightDialog")?.addEventListener("click", () => $("#copyrightDialog").close());
 }
 
 function cleanFirebaseError(err){
@@ -534,6 +540,7 @@ async function refreshAll(){
   await safeLoad("syncState/cable_metraje", loadCableSessionState);
   if(isSuper()) await safeLoad("users", loadUsers);
   renderAll();
+  notifyPendingWork("refresh");
 
   if(state.initWarnings.length){
     console.warn("La app inició con advertencias:", state.initWarnings);
@@ -919,7 +926,7 @@ function connectDrive(interactive = true){
 
         if(!allScopesGranted){
           markDriveDisconnected("Permisos incompletos");
-          reject(new Error("No autorizaste todos los permisos de Drive. Debes aceptar drive.metadata.readonly y drive.readonly."));
+          reject(new Error("No autorizaste todos los permisos de Drive. Debes aceptar drive.metadata.readonly, drive.readonly y drive.file para lectura y carga de evidencias."));
           return;
         }
 
@@ -954,6 +961,51 @@ async function ensureDriveToken(silent = false){
   }
 
   return await connectDrive(true);
+}
+
+
+function guessFileExtension(file){
+  const byName = String(file?.name || "").split(".").pop();
+  if(byName && byName !== file?.name) return byName.toLowerCase();
+  const map = {"image/jpeg":"jpg","image/png":"png","image/webp":"webp","image/heic":"heic"};
+  return map[file?.type] || "jpg";
+}
+function buildCountPhotoName(materialRef, date, description, file){
+  const refPart = safeId(materialRef || "material").slice(0, 60) || "material";
+  const descPart = safeId((description || "").split(" ").slice(0, 4).join("-")).slice(0, 40);
+  const ext = guessFileExtension(file);
+  return `${refPart}${descPart ? "_" + descPart : ""}_${date}.${ext}`;
+}
+async function driveApiJson(url, options = {}){
+  const res = await fetch(url, options);
+  if(!res.ok){
+    const txt = await res.text();
+    throw new Error(`Drive respondió ${res.status}: ${txt.slice(0,220)}`);
+  }
+  return await res.json();
+}
+async function uploadCountPhotoToDrive(file, materialRef, date, description = ""){
+  const token = await ensureDriveToken(false);
+  const fileName = buildCountPhotoName(materialRef, date, description, file);
+  const metadata = await driveApiJson("https://www.googleapis.com/drive/v3/files?fields=id,name,parents,mimeType", {
+    method:"POST",
+    headers:{"Authorization":`Bearer ${token}`,"Content-Type":"application/json"},
+    body:JSON.stringify({ name:fileName, parents:[driveConfig.folderId], mimeType:file.type || "image/jpeg" })
+  });
+  const uploadRes = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${metadata.id}?uploadType=media`, {
+    method:"PATCH",
+    headers:{"Authorization":`Bearer ${token}`,"Content-Type":file.type || "application/octet-stream"},
+    body:file
+  });
+  if(!uploadRes.ok){
+    const txt = await uploadRes.text();
+    throw new Error(`No se pudo subir la foto a Drive: ${uploadRes.status} ${txt.slice(0,220)}`);
+  }
+  const finalMeta = await driveApiJson(`https://www.googleapis.com/drive/v3/files/${metadata.id}?fields=id,name,webViewLink,webContentLink,mimeType,createdTime` , {
+    headers:{"Authorization":`Bearer ${token}`}
+  });
+  logSync(`Foto subida a Drive: ${finalMeta.name}`);
+  return finalMeta;
 }
 
 async function syncFromDrive(silent = false){
@@ -1421,7 +1473,7 @@ function openTaskCountDialog(taskId){
   $("#countDate").value = todayISO();
   $("#countSystemQty").value = Number(task.systemQty || 0);
   $("#countQty").value = Number(task.systemQty || 0);
-  $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = "";
+  $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = ""; if($("#countPhoto")) $("#countPhoto").value = ""; if($("#countPhoto")) $("#countPhoto").value = "";
   $("#countDialogTitle").textContent = cable ? "Registrar metraje físico" : "Registrar conteo";
   $("#systemQtyLabel").childNodes[0].textContent = cable ? "Metros sistema" : "Stock sistema";
   $("#countQtyLabel").childNodes[0].textContent = cable ? "Metros físicos contados" : "Cantidad contada";
@@ -1440,7 +1492,7 @@ function openCaseCountDialog(caseId, mode){
   $("#countDate").value = todayISO();
   $("#countSystemQty").value = Number(c.systemQty ?? c.lastSystemQty ?? 0);
   $("#countQty").value = Number(c.systemQty ?? c.lastSystemQty ?? 0);
-  $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = "";
+  $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = ""; if($("#countPhoto")) $("#countPhoto").value = "";
   $("#countDialogTitle").textContent = mode === "auditoria" ? "Contabilización auditoría" : "Verificación jefe logístico";
   $("#systemQtyLabel").childNodes[0].textContent = "Stock sistema";
   $("#countQtyLabel").childNodes[0].textContent = "Cantidad física";
@@ -1537,6 +1589,7 @@ async function forceMandatoryDailyTasks(showToast = true){
   await batchSet("countTasks", tasks);
   logSync(`Conteo obligatorio creado: ${tasks.length}. Meta de hoy: ${target}. Pendientes anuales: ${totalPending}. Días hábiles restantes: ${countWorkdaysUntilYearEnd(today)}. Método: Pareto aleatorio sin repetición.`);
   if(showToast) toast(`Conteo obligatorio creado: ${tasks.length}`);
+  notifyUser("Conteo obligatorio generado", `${tasks.length} materiales para contar hoy.`, { tag:`conteo-${todayISO()}` });
 }
 
 function weightedParetoShuffle(materials, seedText){
@@ -1587,7 +1640,8 @@ async function saveCount(e){
   const diff = countedQty - systemQty;
   const absDiff = Math.abs(diff);
   const hasDiff = absDiff > 0.0001;
-  const support = $("#countSupport").value || "";
+  let support = $("#countSupport").value || "";
+  const photoFile = $("#countPhoto")?.files?.[0] || null;
   const cause = $("#countCause").value || "N/A";
   const obs = $("#countObs").value || "";
 
@@ -1600,6 +1654,16 @@ async function saveCount(e){
 
     const task = { id:taskSnap.id, ...taskSnap.data() };
     const isCable = task.taskType === "cable_metraje" || task.type === "cable_metraje";
+    let photoMeta = null;
+    if(photoFile){
+      try{
+        photoMeta = await uploadCountPhotoToDrive(photoFile, task.materialRef, date, task.description || "");
+        support = support ? `${support} | Foto: ${photoMeta.webViewLink || photoMeta.name}` : (photoMeta.webViewLink || photoMeta.name);
+      }catch(err){
+        toast("No se pudo subir la foto a Drive: " + (err.message || err), "error");
+        throw err;
+      }
+    }
 
     const countRef = await addDoc(collection(db, "counts"), {
       taskId:task.id,
@@ -1618,6 +1682,10 @@ async function saveCount(e){
       cause,
       support,
       obs,
+      photoDriveId: photoMeta?.id || "",
+      photoDriveName: photoMeta?.name || "",
+      photoDriveUrl: photoMeta?.webViewLink || "",
+      photoDriveDownloadUrl: photoMeta?.webContentLink || "",
       countedByUid:state.user.uid,
       countedByEmail:state.user.email,
       countedByRole:role(),
@@ -1715,6 +1783,16 @@ async function saveCount(e){
     }
 
     const c = { id:caseSnap.id, ...caseSnap.data() };
+    let photoMeta = null;
+    if(photoFile){
+      try{
+        photoMeta = await uploadCountPhotoToDrive(photoFile, c.materialRef, date, c.description || "");
+        support = support ? `${support} | Foto: ${photoMeta.webViewLink || photoMeta.name}` : (photoMeta.webViewLink || photoMeta.name);
+      }catch(err){
+        toast("No se pudo subir la foto a Drive: " + (err.message || err), "error");
+        throw err;
+      }
+    }
     const countRef = await addDoc(collection(db, "counts"), {
       caseId:c.id,
       taskType:mode === "auditoria" ? "conteo_auditoria" : "conteo_jefe_logistico",
@@ -1731,6 +1809,14 @@ async function saveCount(e){
       cause,
       support,
       obs,
+      photoDriveId: photoMeta?.id || "",
+      photoDriveName: photoMeta?.name || "",
+      photoDriveUrl: photoMeta?.webViewLink || "",
+      photoDriveDownloadUrl: photoMeta?.webContentLink || "",
+      photoDriveId: photoMeta?.id || "",
+      photoDriveName: photoMeta?.name || "",
+      photoDriveUrl: photoMeta?.webViewLink || "",
+      photoDriveDownloadUrl: photoMeta?.webContentLink || "",
       countedByUid:state.user.uid,
       countedByEmail:state.user.email,
       countedByRole:role(),
@@ -1874,6 +1960,196 @@ function scheduleAutoSyncChecker(){
 }
 
 
+
+function registerPWAFeatures(){
+  if("serviceWorker" in navigator){
+    navigator.serviceWorker.register("./service-worker.js")
+      .then(reg => console.info("Service Worker registrado", reg.scope))
+      .catch(err => console.warn("No se pudo registrar Service Worker", err));
+  }
+
+  window.addEventListener("beforeinstallprompt", event => {
+    event.preventDefault();
+    state.deferredInstallPrompt = event;
+    const btn = $("#installAppBtn");
+    if(btn) btn.classList.remove("hidden");
+  });
+
+  window.addEventListener("appinstalled", () => {
+    state.deferredInstallPrompt = null;
+    toast("APP instalada correctamente.");
+  });
+}
+
+async function installApp(){
+  if(state.deferredInstallPrompt){
+    state.deferredInstallPrompt.prompt();
+    await state.deferredInstallPrompt.userChoice.catch(() => null);
+    state.deferredInstallPrompt = null;
+    return;
+  }
+  $("#installDialog")?.showModal();
+}
+
+function initAudioContext(){
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if(!AudioContext) return null;
+  if(!state.audioCtx) state.audioCtx = new AudioContext();
+  if(state.audioCtx.state === "suspended") state.audioCtx.resume().catch(() => {});
+  return state.audioCtx;
+}
+
+function playAlertSound(kind = "info"){
+  try{
+    const ctx = initAudioContext();
+    if(!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(kind === "urgent" ? 880 : 660, now);
+    osc.frequency.setValueAtTime(kind === "urgent" ? 660 : 880, now + 0.10);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.16, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.36);
+  }catch(err){ console.warn("No se pudo reproducir sonido", err); }
+}
+
+async function enableAlerts(){
+  initAudioContext();
+  state.notificationsEnabled = true;
+  localStorage.setItem("inventarioAlertsEnabled", "1");
+
+  if(!("Notification" in window)){
+    toast("Este navegador no soporta notificaciones. Los sonidos quedan activos mientras la app esté abierta.", "error");
+    playAlertSound();
+    return;
+  }
+
+  let permission = Notification.permission;
+  if(permission === "default"){
+    permission = await Notification.requestPermission();
+  }
+
+  if(permission === "granted"){
+    toast("Alertas, sonidos y notificaciones activadas.");
+    notifyUser("Inventario Cíclico", "Alertas activadas correctamente.", { tag:"alerts-enabled" });
+    notifyPendingWork("manual");
+  }else{
+    toast("No se concedió permiso de notificaciones. Los sonidos quedan activos dentro de la app.", "error");
+    playAlertSound("urgent");
+  }
+}
+
+function notificationStorageKey(){
+  return `inventarioNotified_${state.user?.uid || "anon"}`;
+}
+
+function getNotifiedSet(){
+  try{ return new Set(JSON.parse(localStorage.getItem(notificationStorageKey()) || "[]")); }
+  catch(e){ return new Set(); }
+}
+
+function saveNotifiedSet(set){
+  localStorage.setItem(notificationStorageKey(), JSON.stringify([...set].slice(-500)));
+}
+
+function notifyUser(title, body, options = {}){
+  if(!state.notificationsEnabled) return;
+  playAlertSound(options.urgent ? "urgent" : "info");
+  if("Notification" in window && Notification.permission === "granted"){
+    try{
+      navigator.serviceWorker?.ready?.then(reg => {
+        reg.showNotification(title, {
+          body,
+          icon:"./icons/icon-192.png",
+          badge:"./icons/icon-192.png",
+          tag: options.tag || "inventario-siesa",
+          renotify: Boolean(options.urgent),
+          data:{ url:"./index.html?source=notification" }
+        });
+      }).catch(() => new Notification(title, { body, tag: options.tag || "inventario-siesa" }));
+    }catch(e){
+      try{ new Notification(title, { body, tag: options.tag || "inventario-siesa" }); }catch(_){}
+    }
+  }
+}
+
+function relevantNotificationItems(){
+  const currentRole = role();
+  const items = [];
+
+  if(["inventario","super_admin"].includes(currentRole)){
+    state.tasks
+      .filter(t => ["assigned","pending_inventory","recount_required"].includes(t.status))
+      .forEach(t => items.push({
+        key:`task:${t.id}:${t.status}`,
+        title:t.status === "recount_required" ? "Reconteo pendiente" : "Conteo asignado",
+        body:`${t.materialRef || ""} · ${t.description || "Material pendiente"}`.slice(0, 140),
+        urgent:t.status === "recount_required"
+      }));
+  }
+
+  if(["jefe_logistico","super_admin"].includes(currentRole)){
+    state.cases
+      .filter(c => ["pending_jefe_logistico","pending_jefe_approval"].includes(c.status))
+      .forEach(c => items.push({
+        key:`case:${c.id}:${c.status}`,
+        title:"Caso pendiente jefe logístico",
+        body:`${c.materialRef || ""} · ${c.lastComment || "Requiere revisión"}`.slice(0, 140),
+        urgent:c.status === "pending_jefe_logistico"
+      }));
+  }
+
+  if(["auditoria","super_admin"].includes(currentRole)){
+    state.cases
+      .filter(c => c.status === "pending_auditoria")
+      .forEach(c => items.push({
+        key:`audit:${c.id}`,
+        title:"Caso pendiente auditoría",
+        body:`${c.materialRef || ""} · ${c.lastComment || "Requiere revisión"}`.slice(0, 140),
+        urgent:true
+      }));
+  }
+
+  if(["gerencia","super_admin"].includes(currentRole)){
+    state.cases
+      .filter(c => c.status === "pending_gerencia")
+      .forEach(c => items.push({
+        key:`mgmt:${c.id}`,
+        title:"Caso pendiente gerencia",
+        body:`${c.materialRef || ""} · ${c.lastComment || "Requiere aprobación"}`.slice(0, 140),
+        urgent:true
+      }));
+  }
+
+  return items;
+}
+
+function notifyPendingWork(source = "refresh"){
+  if(!state.notificationsEnabled || !state.user) return;
+  const notified = getNotifiedSet();
+  const items = relevantNotificationItems();
+  const fresh = items.filter(item => !notified.has(item.key));
+
+  if(!fresh.length) return;
+
+  fresh.slice(0, 3).forEach(item => {
+    notified.add(item.key);
+    notifyUser(item.title, item.body, { tag:item.key, urgent:item.urgent });
+  });
+
+  if(fresh.length > 3){
+    notifyUser("Inventario Cíclico", `Tienes ${fresh.length} novedades pendientes.`, { tag:`summary-${Date.now()}`, urgent:true });
+  }
+
+  saveNotifiedSet(notified);
+}
+
+
 window.firebaseHealthCheck = async function firebaseHealthCheck(){
   const result = {
     authUser: auth.currentUser ? { uid: auth.currentUser.uid, email: auth.currentUser.email } : null,
@@ -1991,6 +2267,7 @@ async function forceCableMeterTasks(showToast = true){
 
   logSync(`Metraje creado: ${tasks.length}. Cables pendientes del año: ${pendingYear.length}. Sesiones restantes: ${remainingSessions}. Método: aleatorio puro cada 15 días.`);
   if(showToast) toast(`Metraje creado: ${tasks.length}`);
+  notifyUser("Metraje de cables generado", `${tasks.length} cables para medir.`, { tag:`metraje-${todayISO()}` });
 }
 
 

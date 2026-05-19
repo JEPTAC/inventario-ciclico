@@ -12,7 +12,8 @@ export const driveConfig = {
   clientId: "125993982318-gn2177d3muf2iip0co9pf9mii7d12cre.apps.googleusercontent.com",
   scopes: [
     "https://www.googleapis.com/auth/drive.metadata.readonly",
-    "https://www.googleapis.com/auth/drive.readonly"
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.file"
   ].join(" "),
   folderId: "1Njl9epGdr68LtlOzq3N0QcnXpcOZVFmQ",
   fileName: "Excel_siesa.xls",

@@ -1,0 +1,63 @@
+{
+  "name": "Inventario Cíclico SIESA",
+  "short_name": "Inventario SIESA",
+  "description": "Control de inventario cíclico, metraje de cables, evidencias fotográficas y aprobaciones.",
+  "id": "./index.html",
+  "start_url": "./index.html?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#0f4c97",
+  "categories": [
+    "business",
+    "productivity",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Conteo obligatorio",
+      "short_name": "Conteo",
+      "description": "Abrir el panel de inventario.",
+      "url": "./index.html?view=inventory",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Drive / SIESA",
+      "short_name": "SIESA",
+      "description": "Sincronizar información desde Drive.",
+      "url": "./index.html?view=drive",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
+}

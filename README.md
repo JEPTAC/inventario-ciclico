@@ -260,3 +260,28 @@ Corrección:
 - Se validaron funciones críticas y duplicados: OK.
 - Se agregaron los KPI visibles de cobertura anual, metraje anual y meta diaria al HTML.
 - No cambia reglas de Firestore frente a v22.
+
+
+## Versión v24 - Evidencias fotográficas, identidad visual y autoría
+
+- Permite cargar una foto por material durante el conteo.
+- La foto se sube a la misma carpeta de Google Drive configurada para SIESA.
+- El archivo se nombra con la referencia del material y la fecha del conteo.
+- Guarda metadatos de la foto en `counts` y actualiza `materials.latestPhoto*`.
+- Se añadió el logo institucional en la interfaz.
+- Se ajustó la paleta a azul, dorado y blanco.
+- Se agregó botón de derechos de autor con información: Juan Esteban Perez - 3183883324.
+- Se añadió el alcance `drive.file` para permitir carga de fotos a Google Drive.
+
+
+## Versión v25 - iOS, móvil, instalable, notificaciones y sonidos
+
+- Se agregó `manifest.webmanifest`.
+- Se agregó `service-worker.js`.
+- Se generaron íconos PWA y Apple Touch Icon.
+- La app puede instalarse como PWA en Android, escritorio y pantalla de inicio de iOS.
+- Se agregaron botones `Instalar APP` y `Activar alertas`.
+- Se agregaron notificaciones locales para tareas, reconteos, casos, sincronización y fotos.
+- Se agregaron sonidos con Web Audio cuando hay novedades.
+- Se reforzó responsive iOS/celular con navegación inferior, safe areas, tamaños táctiles y formularios sin zoom.
+- En iOS, las notificaciones deben habilitarse con interacción del usuario y funcionan mejor cuando la app está agregada a pantalla de inicio.

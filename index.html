@@ -5,19 +5,26 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Inventario Cíclico SIESA</title>
   <link rel="icon" href="./favicon.ico">
+  <meta name="theme-color" content="#0f4c97">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Inventario SIESA">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icons/icon-180.png">
   <link rel="stylesheet" href="./styles.css" />
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
   <div id="loading" class="loading">
-    <div class="loader-card"><div class="loader-logo">ABC</div><h1>Inventario Cíclico SIESA</h1><p>Inicializando aplicación...</p>
+    <div class="loader-card"><img src="./logo_alumbrado_publico.png" alt="Alumbrado público" class="hero-logo"><h1>Inventario Cíclico SIESA</h1><p>Inicializando aplicación...</p>
       <div id="bootErrorBox" style="display:none;margin-top:14px;padding:12px;border-radius:14px;background:#ffe5df;color:#8a1f12;text-align:left;font-size:13px;line-height:1.45"></div></div>
   </div>
 
   <main id="loginView" class="login-view hidden">
     <section class="login-card">
-      <div class="login-brand"><div class="brand-mark">ABC</div><div><h1>Inventario Cíclico</h1><p>Firebase + Drive + SIESA</p></div></div>
+      <div class="login-brand"><div class="brand-mark logo-frame"><img src="./logo_alumbrado_publico.png" alt="Logo" class="brand-logo-img"></div><div><h1>Inventario Cíclico</h1><p>Firebase + Drive + SIESA</p></div></div>
       <form id="loginForm" class="login-form">
         <label>Correo<input id="loginEmail" type="email" autocomplete="email" required placeholder="usuario@empresa.com"></label>
         <label>Contraseña<input id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••"></label>
@@ -29,7 +36,7 @@
 
   <div id="appView" class="app hidden">
     <aside class="sidebar">
-      <div class="brand"><div class="brand-mark">ABC</div><div><h1>Inventario Cíclico</h1><p>Control, metraje y aprobaciones</p></div></div>
+      <div class="brand"><div class="brand-mark logo-frame"><img src="./logo_alumbrado_publico.png" alt="Logo" class="brand-logo-img"></div><div><h1>Inventario Cíclico</h1><p>Control, metraje y aprobaciones</p></div></div>
       <div class="user-box"><span id="userRoleBadge" class="role-badge">Rol</span><b id="userName">Usuario</b><small id="userEmail">correo</small></div>
       <nav class="nav">
         <button class="nav-link active" data-view="dashboardView">Panel</button>
@@ -44,15 +51,15 @@
         <button class="nav-link" data-view="indicatorsView">Indicadores</button>
         <button class="nav-link" data-view="configView" data-roles="super_admin,jefe_logistico">Configuración</button>
       </nav>
-      <button id="logoutBtn" class="btn ghost full">Cerrar sesión</button>
+      <div class="sidebar-meta"><button id="copyrightBtn" class="copyright-link" type="button">© Derechos de autor</button></div><button id="logoutBtn" class="btn ghost full">Cerrar sesión</button>
     </aside>
 
     <section class="content">
       <header class="topbar">
         <div><h2 id="pageTitle">Panel general</h2><p id="pageSubtitle">Estado de sincronización, tareas y casos pendientes.</p></div>
         <div class="top-actions">
-          <button id="connectDriveBtn" class="btn secondary" data-roles="super_admin,jefe_logistico">Conectar Drive</button>
-          <button id="quickSyncBtn" class="btn primary" data-roles="super_admin,jefe_logistico">Sincronizar SIESA</button>
+          <button id="connectDriveBtn" class="btn secondary" data-roles="super_admin,jefe_logistico,inventario,auditoria,gerencia">Conectar Drive</button>
+          <button id="installAppBtn" class="btn secondary" type="button">Instalar APP</button><button id="enableAlertsBtn" class="btn warn" type="button">Activar alertas</button><button id="quickSyncBtn" class="btn primary" data-roles="super_admin,jefe_logistico">Sincronizar SIESA</button>
         </div>
       </header>
 
@@ -131,9 +138,35 @@
     </section>
   </div>
 
-  <dialog id="countDialog" class="dialog"><form id="countForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="countDialogTitle">Registrar conteo</h3><p id="countDialogSubtitle"></p></div><button type="button" id="closeCountDialog" class="icon-btn">×</button></div><input type="hidden" id="countTaskId"><input type="hidden" id="countCaseId"><input type="hidden" id="countMode"><input type="hidden" id="countMaterialRef"><div class="form-grid"><label>Fecha<input id="countDate" type="date" required></label><label id="systemQtyLabel">Stock sistema<input id="countSystemQty" type="number" step="0.001" readonly></label><label id="countQtyLabel">Cantidad contada<input id="countQty" type="number" step="0.001" required></label><label>Soporte / documento<input id="countSupport" placeholder="Foto, acta, remisión, salida, PDF"></label><label>Causa<select id="countCause"><option>N/A</option><option>Error de ubicación</option><option>Salida no registrada</option><option>Ingreso no registrado</option><option>Error documental</option><option>Error de conteo</option><option>Merma, daño o pérdida</option><option>Unidad de medida / conversión</option></select></label><label>Comentarios por referencia<textarea id="countObs" rows="4"></textarea></label></div><div class="dialog-actions"><button type="button" id="cancelCountBtn" class="btn ghost">Cancelar</button><button type="submit" class="btn primary">Guardar</button></div></form></dialog>
+  <dialog id="countDialog" class="dialog"><form id="countForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="countDialogTitle">Registrar conteo</h3><p id="countDialogSubtitle"></p></div><button type="button" id="closeCountDialog" class="icon-btn">×</button></div><input type="hidden" id="countTaskId"><input type="hidden" id="countCaseId"><input type="hidden" id="countMode"><input type="hidden" id="countMaterialRef"><div class="form-grid"><label>Fecha<input id="countDate" type="date" required></label><label id="systemQtyLabel">Stock sistema<input id="countSystemQty" type="number" step="0.001" readonly></label><label id="countQtyLabel">Cantidad contada<input id="countQty" type="number" step="0.001" required></label><label>Soporte / documento<input id="countSupport" placeholder="Foto, acta, remisión, salida, PDF"></label><label>Foto del material<input id="countPhoto" type="file" accept="image/*" capture="environment"></label><label>Causa<select id="countCause"><option>N/A</option><option>Error de ubicación</option><option>Salida no registrada</option><option>Ingreso no registrada</option><option>Error documental</option><option>Error de conteo</option><option>Merma, daño o pérdida</option><option>Unidad de medida / conversión</option></select></label><label class="full-span">Comentarios por referencia<textarea id="countObs" rows="4"></textarea></label><div class="notice compact full-span">Si cargas una foto, la app la sube a la misma carpeta de Drive y la nombra con la referencia del material y la fecha del conteo.</div></div><div class="dialog-actions"><button type="button" id="cancelCountBtn" class="btn ghost">Cancelar</button><button type="submit" class="btn primary">Guardar</button></div></form></dialog>
 
   <dialog id="caseDialog" class="dialog"><form id="caseActionForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="caseDialogTitle">Gestionar caso</h3><p id="caseDialogSubtitle"></p></div><button type="button" id="closeCaseDialog" class="icon-btn">×</button></div><input type="hidden" id="caseId"><input type="hidden" id="caseAction"><label>Observación / justificación<textarea id="caseComment" rows="5" required placeholder="Explique decisión, soporte o acción correctiva."></textarea></label><div class="dialog-actions"><button type="button" id="cancelCaseBtn" class="btn ghost">Cancelar</button><button type="submit" class="btn primary">Confirmar</button></div></form></dialog>
+
+    <dialog id="copyrightDialog" class="dialog">
+    <div class="dialog-card copyright-card">
+      <div class="dialog-head"><div><h3>Derechos de autor</h3><p>Información del creador y certificado de autoría</p></div><button type="button" id="closeCopyrightDialog" class="icon-btn">×</button></div>
+      <div class="copyright-body">
+        <div class="certificate-emoji">🧑🏻‍💻</div>
+        <div>
+          <div class="certificate-title">Certificado de desarrollo</div>
+          <p>Hecho por <b>Juan Esteban Perez</b></p>
+          <p>Contacto: <b>3183883324</b></p>
+          <p>Aplicativo desarrollado para control de inventario cíclico, metraje de cables, trazabilidad y aprobaciones.</p>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="installDialog" class="dialog">
+    <div class="dialog-card install-card">
+      <div class="dialog-head"><div><h3>Instalar APP</h3><p>Acceso rápido tipo aplicación en celular o computador</p></div><button type="button" id="closeInstallDialog" class="icon-btn">×</button></div>
+      <div class="summary-list">
+        <div class="summary-item"><span><b>iPhone / iPad</b><br>Abre Safari, toca Compartir y luego “Agregar a pantalla de inicio”.</span><b>📲</b></div>
+        <div class="summary-item"><span><b>Android / Chrome</b><br>Toca “Instalar APP” o el menú ⋮ y selecciona “Instalar aplicación”.</span><b>🤖</b></div>
+        <div class="summary-item"><span><b>Notificaciones</b><br>Después de instalar, entra a la app y toca “Activar alertas”.</span><b>🔔</b></div>
+      </div>
+    </div>
+  </dialog>
 
   <div id="toast" class="toast"></div>
   <script type="module" src="./app.js"></script>
