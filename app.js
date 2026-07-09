@@ -488,6 +488,7 @@ function setupEvents(){
   $("#closeCountDialog").addEventListener("click", () => $("#countDialog").close());
   $("#cancelCountBtn").addEventListener("click", () => $("#countDialog").close());
   $("#countForm").addEventListener("submit", saveCount);
+  ["#countQty", "#countSystemQty", "#countCause"].forEach(sel => $(sel)?.addEventListener("input", updateCountPreview));
   $("#closeCaseDialog").addEventListener("click", () => $("#caseDialog").close());
   $("#cancelCaseBtn").addEventListener("click", () => $("#caseDialog").close());
   $("#caseActionForm").addEventListener("submit", saveCaseAction);
@@ -605,7 +606,7 @@ async function loadSyncLogs(){
   state.syncLogs = snap.docs.map(d => ({ id:d.id, ...d.data() }));
 }
 async function loadRecentCounts(){
-  const snap = await getDocs(query(collection(db, "counts"), orderBy("createdAt", "desc"), limit(25)));
+  const snap = await getDocs(query(collection(db, "counts"), orderBy("createdAt", "desc"), limit(300)));
   state.counts = snap.docs.map(d => ({ id:d.id, ...d.data() }));
 }
 async function loadCableSessionState(){
@@ -908,6 +909,10 @@ function renderSettings(){
   $("#setCablePeriod").value = state.settings.cablePeriodDays;
   $("#setCableCooldown").value = state.settings.cableCooldownDays || 15;
   $("#setCableLimit").value = state.settings.cableSessionLimit || 0;
+  if($("#setBlindCount")) $("#setBlindCount").value = state.settings.blindCountInventory === false ? "false" : "true";
+  if($("#setMinorDiffPercent")) $("#setMinorDiffPercent").value = Number(state.settings.minorDiffPercent ?? 1);
+  if($("#setCriticalDiffPercent")) $("#setCriticalDiffPercent").value = Number(state.settings.criticalDiffPercent ?? 10);
+  if($("#setCriticalDiffValue")) $("#setCriticalDiffValue").value = Number(state.settings.criticalDiffValue ?? 500000);
   $("#bandsEditor").innerHTML = state.settings.bands.map((b,i) => `<div class="band-row"><label>Banda<input data-band="${i}" data-field="key" value="${esc(b.key)}"></label><label>Descripción<input data-band="${i}" data-field="label" value="${esc(b.label)}"></label><label>Límite<input data-band="${i}" data-field="limit" type="number" step="0.0001" min="0" max="1" value="${b.limit}"></label><label>Frecuencia<input data-band="${i}" data-field="frequency" type="number" min="1" value="${b.frequency}"></label></div>`).join("");
 }
 async function saveSettingsFromUI(){
@@ -920,6 +925,10 @@ async function saveSettingsFromUI(){
   next.cablePeriodDays = Number($("#setCablePeriod").value || 15);
   next.cableCooldownDays = Number($("#setCableCooldown").value || 15);
   next.cableSessionLimit = Number($("#setCableLimit").value || 0);
+  next.blindCountInventory = $("#setBlindCount") ? $("#setBlindCount").value !== "false" : true;
+  next.minorDiffPercent = Number($("#setMinorDiffPercent")?.value || 1);
+  next.criticalDiffPercent = Number($("#setCriticalDiffPercent")?.value || 10);
+  next.criticalDiffValue = Number($("#setCriticalDiffValue")?.value || 500000);
   $$('[data-band]').forEach(input => { const idx = Number(input.dataset.band), field = input.dataset.field; next.bands[idx][field] = field === "limit" || field === "frequency" ? Number(input.value) : input.value; });
   next.bands.sort((a,b) => Number(a.limit) - Number(b.limit));
   next.updatedAt = nowTS();
@@ -930,9 +939,89 @@ async function saveSettingsFromUI(){
 }
 
 
+function diffPercent(absDiff, systemQty){
+  const base = Math.abs(Number(systemQty || 0));
+  const diff = Math.abs(Number(absDiff || 0));
+  if(base <= 0) return diff > 0 ? 100 : 0;
+  return diff / base * 100;
+}
+function buildDiffMeta(diff, systemQty, unitCost = 0){
+  const absDiff = Math.abs(Number(diff || 0));
+  const percent = diffPercent(absDiff, systemQty);
+  const value = absDiff * Math.max(Number(unitCost || 0), 0);
+  const criticalPercent = Number(state.settings.criticalDiffPercent ?? 10);
+  const criticalValue = Number(state.settings.criticalDiffValue ?? 500000);
+  const minorPercent = Number(state.settings.minorDiffPercent ?? 1);
+  let severity = "exacto";
+  let recommendation = "Sin diferencia. Pasar a aprobación del jefe logístico.";
+  if(absDiff > 0.0001){
+    if(value >= criticalValue || percent >= criticalPercent){
+      severity = "critica";
+      recommendation = "Diferencia crítica: conservar evidencia, revisar movimiento documental y escalar si se repite en reconteo.";
+    }else if(percent >= minorPercent){
+      severity = "media";
+      recommendation = "Diferencia media: registrar causa, soporte y ejecutar reconteo obligatorio.";
+    }else{
+      severity = "menor";
+      recommendation = "Diferencia menor: registrar soporte y validar unidad de medida o ubicación antes del reconteo.";
+    }
+  }
+  return { absDiff, percent, value, severity, recommendation };
+}
+function severityLabel(severity){
+  return { exacto:"Exacto", menor:"Menor", media:"Media", critica:"Crítica" }[severity] || "Sin clasificar";
+}
+function severityClass(severity){
+  return { exacto:"green", menor:"yellow", media:"blue", critica:"red" }[severity] || "gray";
+}
+function shouldBlindCount(){
+  return role() === "inventario" && state.settings.blindCountInventory !== false;
+}
+function setSystemQtyVisibility(blind){
+  const label = $("#systemQtyLabel");
+  if(!label) return;
+  label.classList.toggle("blind-hidden", Boolean(blind));
+}
+function updateCountPreview(){
+  const el = $("#countDiffPreview");
+  if(!el) return;
+  const systemQty = num($("#countSystemQty")?.value || 0);
+  const countedRaw = $("#countQty")?.value;
+  if(countedRaw === "" || countedRaw === undefined){
+    el.innerHTML = `<span class="muted-mini">Ingrese la cantidad física para calcular diferencia, porcentaje, impacto y ruta de control.</span>`;
+    return;
+  }
+  const countedQty = num(countedRaw);
+  const unitCost = num($("#countUnitCost")?.value || 0);
+  const diff = countedQty - systemQty;
+  const meta = buildDiffMeta(diff, systemQty, unitCost);
+  el.innerHTML = `
+    <div class="count-preview-row">
+      <span>Diferencia</span><b>${fmt(diff)}</b>
+      <span>%</span><b>${fmt(meta.percent)}%</b>
+      <span>Impacto</span><b>${money(meta.value)}</b>
+      <span>Semáforo</span><b><span class="pill ${severityClass(meta.severity)}">${severityLabel(meta.severity)}</span></b>
+    </div>
+    <div class="count-preview-note">${esc(meta.recommendation)}${shouldBlindCount() ? " El stock de sistema está oculto para evitar sesgo en el conteo." : ""}</div>`;
+}
+function causeParetoRows(counts){
+  const map = new Map();
+  counts.filter(c => Number(c.absDiff || 0) > 0).forEach(c => {
+    const key = c.cause || "Sin causa";
+    const value = Number(c.diffValue || 0) || Math.abs(Number(c.diff || 0)) * Number(c.unitCost || 0);
+    const current = map.get(key) || { cause:key, qty:0, value:0 };
+    current.qty += 1;
+    current.value += value;
+    map.set(key, current);
+  });
+  return [...map.values()].sort((a,b) => b.qty - a.qty || b.value - a.value).slice(0, 6);
+}
+
+
 function renderIndicators(){
   const cov = $("#coverageIndicators");
   const qual = $("#qualityIndicators");
+  const pareto = $("#variancePareto");
   if(!cov || !qual) return;
 
   const total = state.materials.filter(m => m.active !== false).length;
@@ -948,6 +1037,11 @@ function renderIndicators(){
   const diffs = state.counts.filter(c => Number(c.absDiff || 0) > 0);
   const totalCounts = state.counts.length;
   const accuracy = totalCounts ? Math.round((totalCounts - diffs.length) / totalCounts * 100) : 0;
+  const diffValueTotal = state.counts.reduce((s,c) => s + (Number(c.diffValue || 0) || Math.abs(Number(c.diff || 0)) * Number(c.unitCost || 0)), 0);
+  const countedValueSample = state.counts.reduce((s,c) => s + Math.abs(Number(c.systemQty || 0) * Number(c.unitCost || 0)), 0);
+  const valueAccuracy = countedValueSample ? Math.max(0, Math.round((1 - diffValueTotal / countedValueSample) * 100)) : 0;
+  const criticalDiffs = state.counts.filter(c => c.severity === "critica" || c.severity === "crítica").length;
+  const avgDiffValue = totalCounts ? diffValueTotal / totalCounts : 0;
 
   cov.innerHTML = `
     <div class="summary-item"><span>Materiales activos</span><b>${fmt(total)}</b></div>
@@ -966,12 +1060,28 @@ function renderIndicators(){
   qual.innerHTML = `
     <div class="summary-item"><span>Conteos registrados recientes</span><b>${fmt(totalCounts)}</b></div>
     <div class="summary-item"><span>Conteos con diferencia</span><b>${fmt(diffs.length)}</b></div>
-    <div class="summary-item"><span>Exactitud reciente</span><b>${accuracy}%</b></div>
+    <div class="summary-item"><span>Exactitud reciente por referencia</span><b>${accuracy}%</b></div>
+    <div class="summary-item"><span>Exactitud reciente por valor</span><b>${valueAccuracy}%</b></div>
+    <div class="summary-item"><span>Impacto total diferencias</span><b>${money(diffValueTotal)}</b></div>
+    <div class="summary-item"><span>Impacto promedio por conteo</span><b>${money(avgDiffValue)}</b></div>
+    <div class="summary-item"><span>Diferencias críticas</span><b>${fmt(criticalDiffs)}</b></div>
     <div class="summary-item"><span>Casos abiertos</span><b>${fmt(state.cases.length)}</b></div>
     <div class="summary-item"><span>Jefe logístico pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("jefe")).length)}</b></div>
     <div class="summary-item"><span>Auditoría pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("auditoria")).length)}</b></div>
     <div class="summary-item"><span>Gerencia pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("gerencia")).length)}</b></div>
   `;
+
+  if(pareto){
+    const causeRows = causeParetoRows(state.counts);
+    const severityRows = ["critica","media","menor","exacto"].map(sev => ({
+      sev,
+      qty:state.counts.filter(c => (c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto")) === sev).length
+    }));
+    pareto.innerHTML = `
+      <div class="mini-table"><h4>Causas más repetidas</h4>${causeRows.length ? causeRows.map(r => `<div class="mini-row"><span>${esc(r.cause)}</span><b>${fmt(r.qty)}</b><small>${money(r.value)}</small></div>`).join("") : `<div class="empty small">Aún no hay diferencias recientes.</div>`}</div>
+      <div class="mini-table"><h4>Semáforo de conteos</h4>${severityRows.map(r => `<div class="mini-row"><span><span class="pill ${severityClass(r.sev)}">${severityLabel(r.sev)}</span></span><b>${fmt(r.qty)}</b><small>conteos</small></div>`).join("")}</div>
+    `;
+  }
 }
 
 function renderDriveConfig(){
@@ -1690,12 +1800,15 @@ function openTaskCountDialog(taskId){
   $("#countMaterialRef").value = task.materialRef;
   $("#countDate").value = todayISO();
   $("#countSystemQty").value = Number(task.systemQty || 0);
-  $("#countQty").value = Number(task.systemQty || 0);
-  $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = ""; if($("#countPhoto")) $("#countPhoto").value = ""; if($("#countPhoto")) $("#countPhoto").value = "";
+  $("#countQty").value = shouldBlindCount() ? "" : Number(task.systemQty || 0);
+  if($("#countUnitCost")) $("#countUnitCost").value = Number(task.unitCost || 0);
+  $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = ""; if($("#countPhoto")) $("#countPhoto").value = "";
+  setSystemQtyVisibility(shouldBlindCount());
   $("#countDialogTitle").textContent = cable ? "Registrar metraje físico" : "Registrar conteo";
   $("#systemQtyLabel").childNodes[0].textContent = cable ? "Metros sistema" : "Stock sistema";
   $("#countQtyLabel").childNodes[0].textContent = cable ? "Metros físicos contados" : "Cantidad contada";
   $("#countDialogSubtitle").textContent = `${task.materialRef} · ${task.description || ""} · ${task.location || ""}`;
+  updateCountPreview();
   $("#countDialog").showModal();
 }
 function openCaseCountDialog(caseId, mode){
@@ -1710,11 +1823,14 @@ function openCaseCountDialog(caseId, mode){
   $("#countDate").value = todayISO();
   $("#countSystemQty").value = Number(c.systemQty ?? c.lastSystemQty ?? 0);
   $("#countQty").value = Number(c.systemQty ?? c.lastSystemQty ?? 0);
+  if($("#countUnitCost")) $("#countUnitCost").value = Number(c.unitCost || 0);
   $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = ""; if($("#countPhoto")) $("#countPhoto").value = "";
+  setSystemQtyVisibility(false);
   $("#countDialogTitle").textContent = mode === "auditoria" ? "Contabilización auditoría" : "Verificación jefe logístico";
   $("#systemQtyLabel").childNodes[0].textContent = "Stock sistema";
   $("#countQtyLabel").childNodes[0].textContent = "Cantidad física";
   $("#countDialogSubtitle").textContent = `${c.materialRef} · ${c.description || ""}`;
+  updateCountPreview();
   $("#countDialog").showModal();
 }
 
@@ -1871,6 +1987,7 @@ async function saveCount(e){
     }
 
     const task = { id:taskSnap.id, ...taskSnap.data() };
+    const diffMeta = buildDiffMeta(diff, systemQty, Number(task.unitCost || 0));
     const isCable = task.taskType === "cable_metraje" || task.type === "cable_metraje";
     let photoMeta = null;
     if(photoFile){
@@ -1896,6 +2013,11 @@ async function saveCount(e){
       countedQty,
       diff,
       absDiff,
+      unitCost:Number(task.unitCost || 0),
+      diffPercent:diffMeta.percent,
+      diffValue:diffMeta.value,
+      severity:diffMeta.severity,
+      recommendedAction:diffMeta.recommendation,
       result:hasDiff ? "Diferencia" : "Exacto",
       cause,
       support,
@@ -1926,6 +2048,10 @@ async function saveCount(e){
         status:"pending_jefe_approval",
         type:isCable ? "aprobacion_metraje_exacto" : "aprobacion_conteo_exacto",
         diff:0,
+        unitCost:Number(task.unitCost || 0),
+        diffPercent:0,
+        diffValue:0,
+        severity:"exacto",
         sourceTaskId:task.id,
         lastCountId:countRef.id,
         lastComment:isCable ? "Metraje exacto pendiente de aprobación jefe logístico." : "Conteo exacto pendiente de aprobación jefe logístico.",
@@ -1980,6 +2106,10 @@ async function saveCount(e){
           status:"pending_jefe_logistico",
           type:isCable ? "diferencia_persistente_metraje" : "diferencia_persistente_inventario",
           diff,
+          unitCost:Number(task.unitCost || 0),
+          diffPercent:diffMeta.percent,
+          diffValue:diffMeta.value,
+          severity:diffMeta.severity,
           sourceTaskId:task.id,
           lastCountId:countRef.id,
           lastComment:"La diferencia persistió en reconteo. Requiere validación del jefe logístico.",
@@ -2001,6 +2131,7 @@ async function saveCount(e){
     }
 
     const c = { id:caseSnap.id, ...caseSnap.data() };
+    const diffMeta = buildDiffMeta(diff, systemQty, Number(c.unitCost || 0));
     let photoMeta = null;
     if(photoFile){
       try{
@@ -2023,6 +2154,11 @@ async function saveCount(e){
       countedQty,
       diff,
       absDiff,
+      unitCost:Number(c.unitCost || 0),
+      diffPercent:diffMeta.percent,
+      diffValue:diffMeta.value,
+      severity:diffMeta.severity,
+      recommendedAction:diffMeta.recommendation,
       result:hasDiff ? "Diferencia" : "Exacto",
       cause,
       support,
@@ -2042,6 +2178,9 @@ async function saveCount(e){
       lastSystemQty:systemQty,
       lastCountedQty:countedQty,
       diff,
+      diffPercent:diffMeta.percent,
+      diffValue:diffMeta.value,
+      severity:diffMeta.severity,
       lastComment:obs || (hasDiff ? "Se mantiene diferencia." : "Conteo exacto en verificación."),
       updatedAt:nowTS(),
       updatedByUid:state.user.uid,

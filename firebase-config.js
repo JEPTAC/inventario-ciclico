@@ -39,6 +39,10 @@ export const defaultSettings = {
   cableYearSessions: 24,
   cableSessionLimit: 0,
   cableRandomSeed: "METRAJE_ANUAL",
+  blindCountInventory: true,
+  minorDiffPercent: 1,
+  criticalDiffPercent: 10,
+  criticalDiffValue: 500000,
   cableKeywords: [
     "cable", "conductor", "alambre", "encauchetado", "thhn", "awg",
     "cobre", "aluminio", "calibre", "duplex", "triplex", "caucho"

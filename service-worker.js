@@ -1,4 +1,4 @@
-const CACHE_NAME = "inventario-siesa-v27-qa";
+const CACHE_NAME = "inventario-siesa-v28-operativo";
 const APP_SHELL = [
   "./",
   "./index.html",
