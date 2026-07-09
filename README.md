@@ -310,3 +310,32 @@ Corrección puntual:
 - Las tareas muestran descripción y línea con fallback al catálogo `lineas_catalog.json`.
 - No cambia reglas de Firestore.
 - Después de subir esta versión, se debe sincronizar SIESA nuevamente para enriquecer materiales y tareas abiertas.
+
+## Versión v27 - QA, corrección funcional y mejora visual
+
+Revisión aplicada sobre el proyecto entregado en ZIP.
+
+Correcciones principales:
+
+- Se corrigió la carga del catálogo `lineas_catalog.json`; el archivo se estaba leyendo dos veces con `res.json()`, lo que podía dejar el catálogo inutilizado y obligar a clasificar cables solo por palabras clave.
+- Se habilitó correctamente el módulo `Indicadores`; existía en el HTML, pero no estaba autorizado en `VIEW_ACCESS`, por eso no aparecía ni se podía abrir.
+- Se conectaron los botones `Instalar APP`, `Activar alertas` y cierre del diálogo de instalación, que estaban visibles pero sin evento funcional.
+- Se agregó lectura del parámetro `?view=` para que los accesos directos del manifest abran el módulo correcto: inventario, Drive, indicadores, cables, etc.
+- Se corrigió el renderizado general para que también actualice indicadores y configuración Drive.
+- Se eliminaron propiedades duplicadas de evidencias fotográficas en el guardado de conteos de casos.
+- Se ajustaron reglas Firestore para que el flujo real de inventario pueda actualizar `lastComment` y crear reconteos derivados de diferencias sin romper permisos.
+- Se actualizó el Service Worker a `inventario-siesa-v27-qa` y se agregó respeto por solicitudes `no-cache/no-store`.
+- Se reemplazó el `favicon.ico` vacío por un ícono válido generado desde los assets del proyecto.
+- Se aplicó una capa visual más limpia: tarjetas con mejor jerarquía, navegación lateral con estado activo, KPIs más legibles, tablas más claras y mejor comportamiento móvil.
+
+Pruebas realizadas:
+
+- Validación sintáctica JavaScript con `node --check` para `app.js`, `firebase-config.js` y `service-worker.js`.
+- Validación JSON de `manifest.webmanifest` y `lineas_catalog.json`.
+- Revisión de IDs HTML contra referencias JavaScript.
+- Revisión de botones con ID contra eventos y referencias del código.
+- Revisión de funciones duplicadas.
+
+Nota operativa:
+
+Después de subir esta versión, publicar también `firestore.rules` en Firebase. Luego recargar la app con Ctrl + F5 o limpiar caché para que el nuevo Service Worker tome la versión `v27-qa`.

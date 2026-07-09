@@ -117,6 +117,7 @@ const VIEW_ACCESS = {
   gerenciaView: ["super_admin", "gerencia"],
   materialsView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
   lineCatalogView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
+  indicatorsView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
   configView: ["super_admin", "jefe_logistico"]
 };
 
@@ -490,6 +491,9 @@ function setupEvents(){
   $("#closeCaseDialog").addEventListener("click", () => $("#caseDialog").close());
   $("#cancelCaseBtn").addEventListener("click", () => $("#caseDialog").close());
   $("#caseActionForm").addEventListener("submit", saveCaseAction);
+  $("#installAppBtn")?.addEventListener("click", installApp);
+  $("#closeInstallDialog")?.addEventListener("click", () => $("#installDialog")?.close());
+  $("#enableAlertsBtn")?.addEventListener("click", enableAlerts);
   $("#copyrightBtn")?.addEventListener("click", () => $("#copyrightDialog").showModal());
   $("#closeCopyrightDialog")?.addEventListener("click", () => $("#copyrightDialog").close());
 }
@@ -619,6 +623,31 @@ function showLogin(){
   $("#appView").classList.add("hidden");
   $("#loginView").classList.remove("hidden");
 }
+function getInitialViewFromUrl(){
+  try{
+    const requested = new URLSearchParams(window.location.search).get("view") || "";
+    const key = requested.trim().toLowerCase();
+    const viewAliases = {
+      panel:"dashboardView", dashboard:"dashboardView", inicio:"dashboardView",
+      usuarios:"usersView", users:"usersView",
+      drive:"driveView", siesa:"driveView",
+      inventario:"inventoryView", inventory:"inventoryView", conteo:"inventoryView",
+      cables:"cableView", cable:"cableView", metraje:"cableView",
+      jefe:"jefeView", logistico:"jefeView", logistica:"jefeView",
+      auditoria:"auditoriaView", auditoría:"auditoriaView", audit:"auditoriaView",
+      gerencia:"gerenciaView", management:"gerenciaView",
+      materiales:"materialsView", materials:"materialsView",
+      lineas:"lineCatalogView", líneas:"lineCatalogView", catalogo:"lineCatalogView", catálogo:"lineCatalogView",
+      indicadores:"indicatorsView", indicators:"indicatorsView", kpi:"indicatorsView",
+      configuracion:"configView", configuración:"configView", config:"configView"
+    };
+    const viewId = viewAliases[key] || (requested.endsWith("View") ? requested : "dashboardView");
+    return VIEW_ACCESS[viewId] ? viewId : "dashboardView";
+  }catch(err){
+    return "dashboardView";
+  }
+}
+
 function showApp(){
   $("#loading").classList.add("hidden");
   $("#loginView").classList.add("hidden");
@@ -627,7 +656,7 @@ function showApp(){
   $("#userEmail").textContent = state.profile.email || state.user.email;
   $("#userRoleBadge").textContent = ROLE_LABELS[role()] || role();
   applyRoleVisibility();
-  setView("dashboardView");
+  setView(getInitialViewFromUrl());
 }
 function applyRoleVisibility(){
   $$('[data-roles]').forEach(el => {
@@ -696,7 +725,17 @@ window.toggleUser = toggleUser;
 window.resetPassword = resetPassword;
 
 function renderAll(){
-  renderKpis(); renderDashboard(); renderTasks(); renderCableTasks(); renderCases(); renderMaterials(); renderSettings(); renderLineCatalog(); if(isSuper()) renderUsers();
+  renderKpis();
+  renderDashboard();
+  renderTasks();
+  renderCableTasks();
+  renderCases();
+  renderMaterials();
+  renderSettings();
+  renderLineCatalog();
+  renderIndicators();
+  renderDriveConfig();
+  if(isSuper()) renderUsers();
 }
 function renderKpis(){
   const today = todayISO();
@@ -1988,10 +2027,6 @@ async function saveCount(e){
       cause,
       support,
       obs,
-      photoDriveId: photoMeta?.id || "",
-      photoDriveName: photoMeta?.name || "",
-      photoDriveUrl: photoMeta?.webViewLink || "",
-      photoDriveDownloadUrl: photoMeta?.webContentLink || "",
       photoDriveId: photoMeta?.id || "",
       photoDriveName: photoMeta?.name || "",
       photoDriveUrl: photoMeta?.webViewLink || "",
