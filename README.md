@@ -1,3 +1,9 @@
+## V30 operativo-gerencial
+
+Esta versión agrega Conteo Express enriquecido con nombre real de referencia, etiquetas QR imprimibles, cola offline avanzada, mapa de calor, ranking de causas, tiempos por conteo, PDF automático por caso, alertas inteligentes y tablero ejecutivo gerencial.
+
+Ver detalles en `ANALISIS_MEJORAS_V30_OPERATIVO_GERENCIAL.md` y `QA_V30_OPERATIVO_GERENCIAL.md`.
+
 # Inventario Cíclico SIESA - Firebase + Drive v13 v12
 
 Aplicación web estática para GitHub Pages con Firebase Authentication, Firestore y lectura del Excel diario `Excel_siesa.xls` desde Google Drive.

@@ -131,7 +131,7 @@ const VIEW_ACCESS = {
   auditoriaView: ["super_admin", "auditoria"],
   gerenciaView: ["super_admin", "gerencia"],
   materialsView: ["super_admin", "jefe_logistico", "auditoria", "gerencia"],
-  qrLabelsView: ["super_admin", "jefe_logistico"],
+  qrLabelsView: ["super_admin", "jefe_logistico", "inventario"],
   lineCatalogView: ["super_admin", "jefe_logistico"],
   indicatorsView: ["super_admin", "jefe_logistico", "auditoria", "gerencia"],
   configView: ["super_admin", "jefe_logistico"]
@@ -504,11 +504,12 @@ function setupEvents(){
   $("#scanRefBtn")?.addEventListener("click", () => openScanner("ref"));
   $("#closeScannerDialog")?.addEventListener("click", closeScanner);
   $("#manualScanApplyBtn")?.addEventListener("click", applyManualScanValue);
-  ["#qrSearch", "#qrType", "#qrLimit"].forEach(sel => $(sel)?.addEventListener("input", renderQrLabels));
+  ["#qrSearch", "#qrType", "#qrLimit", "#qrLabelSize"].forEach(sel => $(sel)?.addEventListener("input", renderQrLabels));
   $("#printQrLabelsBtn")?.addEventListener("click", printQrLabels);
   $$('[data-qty-step]').forEach(btn => btn.addEventListener("click", () => bumpCountQty(Number(btn.dataset.qtyStep || 0))));
   $$('[data-qty-clear]').forEach(btn => btn.addEventListener("click", clearCountQty));
-  window.addEventListener("online", flushOfflineCountQueue);
+  window.addEventListener("online", () => { updateOfflineStatus(); flushOfflineCountQueue(); });
+  window.addEventListener("offline", updateOfflineStatus);
   ["#materialSearch", "#materialBandFilter", "#materialCableFilter"].forEach(sel => $(sel)?.addEventListener("input", renderMaterials));
   ["#lineSearch", "#lineCableFilter"].forEach(sel => $(sel)?.addEventListener("input", renderLineCatalog));
   $("#saveSettingsBtn").addEventListener("click", saveSettingsFromUI);
@@ -594,6 +595,30 @@ function enrichMaterialFromCatalog(base){
     cableReason: cat.cableReason || base.cableReason || "",
     isCable: Boolean(base.isCable || cat.isCable)
   };
+}
+function materialMetaByRef(ref){
+  const exact = materialByRef(ref);
+  const cat = catalogMaterial(ref);
+  if(exact || cat) return { ...(cat || {}), ...(exact || {}) };
+  const key = norm(ref);
+  return state.materials.find(m => norm(m.ref) === key || norm(m.ref).replace(/^0+/, "") === key.replace(/^0+/, "")) || {};
+}
+function displayMeta(item = {}){
+  const m = materialMetaByRef(item.materialRef || item.ref || item.materialId || "");
+  const cat = catalogMaterial(item.materialRef || item.ref || "") || {};
+  const ref = item.materialRef || item.ref || m.ref || "";
+  const description = item.description || m.description || cat.description || "Referencia sin nombre cargado";
+  const line = item.catalogLine || item.category || m.catalogLine || m.category || cat.line || "";
+  const location = item.location || m.location || "";
+  const unit = item.unit || m.unit || cat.unit || (item.taskType === "cable_metraje" ? "m" : "und");
+  const systemQty = Number(item.systemQty ?? m.stockSystem ?? item.stockSystem ?? 0);
+  const unitCost = Number(item.unitCost ?? m.unitCost ?? 0);
+  const inventoryValue = Number(item.inventoryValue ?? m.inventoryValue ?? (systemQty * unitCost) ?? 0);
+  return { ref, description, line, location, unit, systemQty, unitCost, inventoryValue, isCable:Boolean(item.isCable || m.isCable || cat.isCable) };
+}
+function taskLabel(item = {}){
+  const meta = displayMeta(item);
+  return `${meta.ref}${meta.description ? " · " + meta.description : ""}`;
 }
 
 async function refreshAll(){
@@ -804,16 +829,31 @@ function taskRiskMeta(task){
 function getExpressTasks(){
   let rows = state.tasks.filter(t => getOpenTaskStatuses().includes(t.status));
   if(!isSuper() && role() === "inventario") rows = rows.filter(t => ["assigned","recount_required","pending_inventory"].includes(t.status));
+  rows = rows.map(t => {
+    const meta = displayMeta(t);
+    return {
+      ...t,
+      materialRef:t.materialRef || meta.ref,
+      description:meta.description,
+      location:meta.location || t.location || "",
+      unit:meta.unit || t.unit || "",
+      catalogLine:meta.line || t.catalogLine || t.category || "",
+      systemQty:Number(t.systemQty ?? meta.systemQty ?? 0),
+      unitCost:Number(t.unitCost ?? meta.unitCost ?? 0),
+      inventoryValue:Number(t.inventoryValue ?? meta.inventoryValue ?? 0),
+      isCable:Boolean(t.isCable || meta.isCable),
+      risk:taskRiskMeta({ ...t, ...meta, materialRef:t.materialRef || meta.ref })
+    };
+  });
   const loc = norm($("#expressLocationInput")?.value || state.express.selectedLocation || "");
   const ref = norm($("#expressRefInput")?.value || state.express.selectedRef || "");
   const filter = $("#expressTaskTypeFilter")?.value || "";
   if(loc) rows = rows.filter(t => norm(t.location || "").includes(loc));
-  if(ref) rows = rows.filter(t => [t.materialRef,t.description,t.catalogLine,t.category].some(v => norm(v).includes(ref)));
+  if(ref) rows = rows.filter(t => [t.materialRef,t.description,t.catalogLine,t.category,t.location].some(v => norm(v).includes(ref)));
   if(filter === "today") rows = rows.filter(t => (t.scheduledDate || "") === todayISO());
   if(filter === "recount") rows = rows.filter(t => t.status === "recount_required" || norm(t.taskType || t.type).includes("reconteo"));
-  if(filter === "cable") rows = rows.filter(t => t.taskType === "cable_metraje" || t.type === "cable_metraje");
+  if(filter === "cable") rows = rows.filter(t => t.taskType === "cable_metraje" || t.type === "cable_metraje" || t.isCable);
   if(filter === "risk") rows = rows.filter(t => taskRiskMeta(t).score >= Number(state.settings.highRiskScoreThreshold ?? 70));
-  rows = rows.map(t => ({ ...t, risk:taskRiskMeta(t) }));
   rows.sort((a,b) => {
     const statusA = a.status === "recount_required" ? 1 : 0;
     const statusB = b.status === "recount_required" ? 1 : 0;
@@ -860,6 +900,7 @@ function renderExpress(){
   if($("#expressPendingToday")) $("#expressPendingToday").textContent = fmt(state.tasks.filter(t => getOpenTaskStatuses().includes(t.status) && (t.scheduledDate || "") === todayISO()).length);
   if($("#expressRecounts")) $("#expressRecounts").textContent = fmt(state.tasks.filter(t => t.status === "recount_required").length);
   if($("#expressRiskHigh")) $("#expressRiskHigh").textContent = fmt(state.tasks.filter(t => taskRiskMeta(t).score >= Number(state.settings.highRiskScoreThreshold ?? 70)).length);
+  if($("#expressOfflineQueue")) $("#expressOfflineQueue").textContent = fmt(state.offlineQueue?.length || 0);
 
   let selected = rows.find(t => t.id === state.express.selectedTaskId) || rows[0] || null;
   if(selected){
@@ -871,33 +912,39 @@ function renderExpress(){
   bindExpressButtons();
 }
 function expressTaskDetail(t){
+  const meta = displayMeta(t);
   const risk = t.risk || taskRiskMeta(t);
-  const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje";
-  const value = Number(t.inventoryValue || Number(t.systemQty || 0) * Number(t.unitCost || 0));
+  const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje" || meta.isCable;
+  const value = Number(meta.inventoryValue || Number(meta.systemQty || 0) * Number(meta.unitCost || 0));
   return `<div class="express-current-card">
     <div class="express-current-top"><span class="pill ${risk.cls}">Riesgo ${risk.label} · ${risk.score}</span>${statusPill(t.status)}</div>
-    <h2>${esc(t.materialRef || "")}</h2>
-    <p>${esc(t.description || "Sin descripción")}</p>
+    <div class="express-ref-title">
+      <span>Referencia</span>
+      <h2>${esc(meta.ref || "")}</h2>
+      <strong>${esc(meta.description || "Referencia sin nombre cargado")}</strong>
+      ${meta.line ? `<small>${esc(meta.line)}</small>` : ""}
+    </div>
     <div class="express-data-grid">
-      <div><span>Ubicación</span><b>${esc(t.location || "Sin ubicación")}</b></div>
-      <div><span>Unidad</span><b>${esc(t.unit || (isCable ? "m" : "und"))}</b></div>
-      <div><span>${isCable ? "Metros sistema" : "Stock sistema"}</span><b>${shouldBlindCount() ? "Oculto" : fmt(t.systemQty)}</b></div>
+      <div><span>Ubicación</span><b>${esc(meta.location || "Sin ubicación")}</b></div>
+      <div><span>Unidad</span><b>${esc(meta.unit || (isCable ? "m" : "und"))}</b></div>
+      <div><span>${isCable ? "Metros sistema" : "Stock sistema"}</span><b>${shouldBlindCount() ? "Oculto" : fmt(meta.systemQty)}</b></div>
       <div><span>Valor inventario</span><b>${money(value)}</b></div>
       <div><span>Motivo riesgo</span><b>${esc(risk.reasons)}</b></div>
     </div>
     <div class="button-row express-main-actions">
       <button class="btn primary big-action" type="button" data-express-count="${esc(t.id)}">Contar ahora</button>
-      <button class="btn secondary" type="button" data-copy-ref="${esc(t.materialRef || "")}">Copiar ref</button>
+      <button class="btn secondary" type="button" data-copy-ref="${esc(meta.ref || "")}">Copiar ref</button>
     </div>
   </div>`;
 }
 function expressTaskMiniCard(t, active=false){
+  const meta = displayMeta(t);
   const risk = t.risk || taskRiskMeta(t);
-  const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje";
+  const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje" || meta.isCable;
   return `<button class="express-mini-card ${active ? "active" : ""}" type="button" data-select-express="${esc(t.id)}">
-    <span class="mini-ref">${esc(t.materialRef || "")}</span>
-    <span class="mini-desc">${esc(t.description || "")}</span>
-    <span class="mini-meta">${esc(t.location || "Sin ubicación")} · ${isCable ? "Cable" : esc(t.band || "")}</span>
+    <span class="mini-ref">${esc(meta.ref || "")}</span>
+    <span class="mini-desc"><b>${esc(meta.description || "Sin nombre")}</b></span>
+    <span class="mini-meta">${esc(meta.location || "Sin ubicación")} · ${isCable ? "Cable" : esc(t.band || "")}${meta.line ? " · " + esc(meta.line) : ""}</span>
     <span class="mini-footer"><b class="pill ${risk.cls}">${risk.score}</b>${statusPill(t.status)}</span>
   </button>`;
 }
@@ -1009,7 +1056,8 @@ function countContextItem(){
   return null;
 }
 function requiresPhotoForCount(meta, item){
-  const isCable = item?.taskType === "cable_metraje" || item?.type === "cable_metraje" || norm(item?.type).includes("metraje");
+  const dmeta = item ? displayMeta(item) : {};
+  const isCable = item?.taskType === "cable_metraje" || item?.type === "cable_metraje" || norm(item?.type).includes("metraje") || dmeta.isCable;
   if(Number(meta.absDiff || 0) <= 0.0001) return false;
   if((meta.severity === "critica" || meta.severity === "crítica") && state.settings.requirePhotoCritical !== false) return true;
   if(isCable && state.settings.requirePhotoCableDiff !== false) return true;
@@ -1036,30 +1084,153 @@ function renderQrLabels(){
   if(!el) return;
   const q = norm($("#qrSearch")?.value || "");
   const type = $("#qrType")?.value || "material";
+  const size = $("#qrLabelSize")?.value || "standard";
   const max = Math.max(1, Math.min(200, Number($("#qrLimit")?.value || 48)));
+  el.classList.toggle("large", size === "large");
+  el.classList.toggle("compact", size === "compact");
   let items = [];
   if(type === "location"){
-    const locs = [...new Set(state.materials.map(m => String(m.location || "").trim()).filter(Boolean))];
-    items = locs.filter(l => !q || norm(l).includes(q)).slice(0,max).map(l => ({ label:l, data:`LOC:${l}`, sub:"Ubicación" }));
+    const locs = [...new Set(state.materials.map(m => String(m.location || "").trim()).filter(Boolean))].sort();
+    items = locs.filter(l => !q || norm(l).includes(q)).slice(0,max).map(l => ({ label:l, data:`LOC:${l}`, sub:"Ubicación física", kind:"location" }));
   }else{
-    items = state.materials.filter(m => !q || [m.ref,m.description,m.location].some(v => norm(v).includes(q))).slice(0,max).map(m => ({ label:m.ref, data:`MAT:${m.ref}`, sub:m.description || m.location || "Referencia" }));
+    items = state.materials
+      .map(m => ({ ...m, ...displayMeta({ materialRef:m.ref, ...m }) }))
+      .filter(m => !q || [m.ref,m.description,m.location,m.line].some(v => norm(v).includes(q)))
+      .slice(0,max)
+      .map(m => ({ label:m.ref, data:`MAT:${m.ref}`, sub:m.description || m.location || "Referencia", location:m.location || "", unit:m.unit || "", kind:"material" }));
   }
   el.innerHTML = items.length ? items.map(qrLabelHtml).join("") : `<div class="empty small">No hay etiquetas para mostrar.</div>`;
 }
 function qrLabelHtml(item){
   const data = encodeURIComponent(item.data);
-  return `<div class="qr-label"><img alt="QR ${esc(item.label)}" src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${data}"><b>${esc(item.label)}</b><span>${esc(item.sub || "")}</span><small>${esc(item.data)}</small></div>`;
+  const img = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${data}`;
+  return `<div class="qr-label" data-qr="${esc(item.data)}"><img alt="QR ${esc(item.label)}" src="${img}"><b>${esc(item.label)}</b><span>${esc(item.sub || "")}</span>${item.location ? `<em>${esc(item.location)}</em>` : ""}<small>${esc(item.data)}</small></div>`;
 }
 function printQrLabels(){
   const html = $("#qrLabelPreview")?.innerHTML || "";
+  const size = $("#qrLabelSize")?.value || "standard";
+  const columns = size === "large" ? 3 : size === "compact" ? 5 : 4;
   const w = window.open("", "_blank");
   if(!w) return toast("El navegador bloqueó la ventana de impresión.", "error");
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas QR</title><style>body{font-family:Century Gothic,Arial;margin:18px;color:#0b2d5c}.qr-label-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.qr-label{border:1px solid #ccd8e8;border-radius:14px;padding:10px;text-align:center;page-break-inside:avoid}.qr-label img{width:96px;height:96px}.qr-label b{display:block;font-size:14px;margin-top:5px}.qr-label span{display:block;font-size:10px}.qr-label small{display:block;font-size:8px;color:#64758d;margin-top:4px}@media print{body{margin:0}.qr-label{border-color:#777}}</style></head><body><div class="qr-label-grid">${html}</div><script>setTimeout(()=>print(),400)<\/script></body></html>`);
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas QR</title><style>body{font-family:Century Gothic,Arial;margin:14px;color:#0b2d5c}.qr-label-grid{display:grid;grid-template-columns:repeat(${columns},1fr);gap:8px}.qr-label{border:1px solid #8ea7c4;border-radius:12px;padding:8px;text-align:center;page-break-inside:avoid;min-height:${size === "large" ? "205px" : "155px"}}.qr-label img{width:${size === "compact" ? "78px" : "105px"};height:${size === "compact" ? "78px" : "105px"}}.qr-label b{display:block;font-size:${size === "compact" ? "11px" : "14px"};margin-top:4px;word-break:break-word}.qr-label span{display:block;font-size:${size === "compact" ? "8px" : "10px"};line-height:1.15}.qr-label em{display:block;font-style:normal;font-size:9px;color:#345;line-height:1.15}.qr-label small{display:block;font-size:7px;color:#64758d;margin-top:3px;word-break:break-all}@page{size:letter;margin:10mm}@media print{body{margin:0}.qr-label{border-color:#555}}</style></head><body><div class="qr-label-grid">${html}</div><script>setTimeout(()=>print(),500)<\/script></body></html>`);
   w.document.close();
 }
-function flushOfflineCountQueue(){
-  if(state.offlineQueue?.length){
-    toast("Conexión recuperada. Firestore sincronizará los cambios pendientes automáticamente.");
+function saveOfflineQueue(){
+  localStorage.setItem("inventarioOfflineCountQueue", JSON.stringify(state.offlineQueue || []));
+  updateOfflineStatus();
+}
+function updateOfflineStatus(){
+  const online = navigator.onLine !== false;
+  const qty = state.offlineQueue?.length || 0;
+  const label = $("#offlineStateBadge");
+  const count = $("#offlineQueueCount");
+  const pill = $("#offlineStatusPill");
+  if(label) label.textContent = online ? "En línea" : "Sin conexión";
+  if(count) count.textContent = fmt(qty);
+  if(pill){
+    pill.classList.toggle("offline", !online);
+    pill.classList.toggle("queued", qty > 0);
+    pill.title = qty ? `${qty} conteo(s) guardado(s) localmente pendientes por sincronizar.` : (online ? "Conexión disponible" : "Sin conexión. Puedes guardar conteos sin foto para sincronizar después.");
+  }
+  if($("#expressOfflineQueue")) $("#expressOfflineQueue").textContent = fmt(qty);
+}
+function enqueueOfflineCount(item){
+  state.offlineQueue ||= [];
+  state.offlineQueue.push({ ...item, localId:item.localId || `OFF-${Date.now()}-${Math.round(Math.random()*9999)}` });
+  saveOfflineQueue();
+  toast("Conteo guardado en modo offline. Se sincronizará cuando vuelva internet.");
+  notifyUser("Conteo offline guardado", `${item.materialRef || "Referencia"} queda pendiente de sincronizar.`, { tag:item.localId || `off-${Date.now()}` });
+}
+function buildOfflinePayload({ task=null, caseItem=null, mode="task", saveAndNext=false }){
+  const item = task || caseItem || {};
+  const meta = displayMeta(item);
+  const systemQty = num($("#countSystemQty")?.value || 0);
+  const countedQty = num($("#countQty")?.value || 0);
+  const diff = countedQty - systemQty;
+  const diffMeta = buildDiffMeta(diff, systemQty, Number($("#countUnitCost")?.value || meta.unitCost || 0));
+  return {
+    localId:`OFF-${Date.now()}-${safeId(meta.ref || item.materialRef || "ref")}`,
+    kind:task ? "task" : "case",
+    mode,
+    saveAndNext,
+    task: task ? { ...task, ...meta } : null,
+    caseItem: caseItem ? { ...caseItem, ...meta } : null,
+    materialRef:meta.ref || item.materialRef || "",
+    description:meta.description || item.description || "",
+    location:meta.location || item.location || "",
+    date:$("#countDate")?.value || todayISO(),
+    systemQty, countedQty, diff, absDiff:Math.abs(diff),
+    unitCost:Number($("#countUnitCost")?.value || meta.unitCost || 0),
+    diffPercent:diffMeta.percent,
+    diffValue:diffMeta.value,
+    severity:diffMeta.severity,
+    recommendedAction:diffMeta.recommendation,
+    cause:$("#countCause")?.value || "N/A",
+    support:$("#countSupport")?.value || "",
+    obs:$("#countObs")?.value || "",
+    countStartedAt:$("#countStartedAt")?.value || state.express.countStartedAt || "",
+    countDurationSeconds:countDurationSeconds(),
+    countedByUid:state.user?.uid || "",
+    countedByEmail:state.user?.email || "",
+    countedByRole:role(),
+    createdLocalAt:new Date().toISOString()
+  };
+}
+async function persistQueuedTaskCount(q){
+  const taskId = q.task?.id || q.taskId || "";
+  let task = q.task || {};
+  if(taskId){
+    try{
+      const snap = await getDoc(doc(db, "countTasks", taskId));
+      if(snap.exists()) task = { id:snap.id, ...snap.data() };
+    }catch(err){ console.warn("No se pudo refrescar tarea offline", err); }
+  }
+  const isCable = task.taskType === "cable_metraje" || task.type === "cable_metraje" || q.task?.isCable;
+  const hasDiff = Number(q.absDiff || 0) > 0.0001;
+  const countRef = await addDoc(collection(db, "counts"), {
+    taskId:task.id || taskId, taskType:task.taskType || task.type || q.task?.taskType || "general",
+    materialRef:q.materialRef, materialId:task.materialId || q.task?.materialId || safeId(q.materialRef), description:q.description || task.description || "", location:q.location || task.location || "", band:task.band || q.task?.band || "", date:q.date || todayISO(), systemQty:Number(q.systemQty || 0), countedQty:Number(q.countedQty || 0), diff:Number(q.diff || 0), absDiff:Number(q.absDiff || 0), unitCost:Number(q.unitCost || 0), diffPercent:Number(q.diffPercent || 0), diffValue:Number(q.diffValue || 0), severity:q.severity || "", recommendedAction:q.recommendedAction || "", result:hasDiff ? "Diferencia" : "Exacto", cause:q.cause || "N/A", support:q.support || "", obs:q.obs || "", countedByUid:q.countedByUid, countedByEmail:q.countedByEmail, countedByRole:q.countedByRole, countStartedAt:q.countStartedAt || "", countDurationSeconds:Number(q.countDurationSeconds || 0), offlineLocalId:q.localId, offlineCreatedAt:q.createdLocalAt || "", syncedFromOffline:true, createdAt:nowTS()
+  });
+  if(!task.id) return;
+  if(!hasDiff){
+    await updateDoc(doc(db, "countTasks", task.id), { status:"pending_jefe_approval", lastCountId:countRef.id, updatedAt:nowTS(), lastComment:isCable ? "Metraje exacto registrado offline y sincronizado." : "Conteo exacto registrado offline y sincronizado." });
+    await addDoc(collection(db, "cases"), { materialRef:q.materialRef, materialId:task.materialId || safeId(q.materialRef), description:q.description || "", location:q.location || "", status:"pending_jefe_approval", type:isCable ? "aprobacion_metraje_exacto" : "aprobacion_conteo_exacto", diff:0, unitCost:Number(q.unitCost || 0), diffPercent:0, diffValue:0, severity:"exacto", sourceTaskId:task.id, lastCountId:countRef.id, lastComment:"Conteo exacto sincronizado desde modo offline. Pendiente aprobación jefe logístico.", createdAt:nowTS(), createdByUid:q.countedByUid, createdByEmail:q.countedByEmail, history:[{ at:new Date().toISOString(), by:q.countedByEmail, role:q.countedByRole, action:"sincronizacion_offline", comment:"Conteo exacto guardado offline y sincronizado." }] });
+  }else if(Number(task.recountRound || 0) < 1){
+    const recountId = `${isCable ? "METERREC" : "REC"}-${todayISO()}-${safeId(q.materialRef)}-${Date.now()}`;
+    await setDoc(doc(db, "countTasks", recountId), { ...task, status:"recount_required", type:isCable ? "reconteo_metraje" : "reconteo_inventario", taskType:isCable ? "cable_metraje" : "reconteo_inventario", recountRound:Number(task.recountRound || 0) + 1, scheduledDate:todayISO(), priority:120000, origin:"offline_reconteo_por_diferencia", createdAt:nowTS(), createdByUid:q.countedByUid, createdByEmail:q.countedByEmail, previousTaskId:task.id, previousCountId:countRef.id });
+    await updateDoc(doc(db, "countTasks", task.id), { status:"closed_with_difference_recount_created", lastCountId:countRef.id, updatedAt:nowTS(), lastComment:"Diferencia detectada offline. Se generó reconteo obligatorio." });
+  }else{
+    await updateDoc(doc(db, "countTasks", task.id), { status:"pending_jefe_logistico", lastCountId:countRef.id, updatedAt:nowTS(), lastComment:"Diferencia persistente sincronizada desde modo offline." });
+    await addDoc(collection(db, "cases"), { materialRef:q.materialRef, materialId:task.materialId || safeId(q.materialRef), description:q.description || "", location:q.location || "", status:"pending_jefe_logistico", type:isCable ? "diferencia_persistente_metraje" : "diferencia_persistente_inventario", diff:Number(q.diff || 0), unitCost:Number(q.unitCost || 0), diffPercent:Number(q.diffPercent || 0), diffValue:Number(q.diffValue || 0), severity:q.severity || "media", sourceTaskId:task.id, lastCountId:countRef.id, lastComment:"La diferencia persistió y fue sincronizada desde modo offline.", createdAt:nowTS(), createdByUid:q.countedByUid, createdByEmail:q.countedByEmail, history:[{ at:new Date().toISOString(), by:q.countedByEmail, role:q.countedByRole, action:"diferencia_persistente_offline", comment:q.obs || "Diferencia persistente sincronizada desde offline." }] });
+  }
+}
+async function persistQueuedCaseCount(q){
+  const c = q.caseItem || {};
+  const caseId = c.id || q.caseId;
+  if(!caseId) return;
+  const countRef = await addDoc(collection(db, "counts"), { caseId, taskType:q.mode === "auditoria" ? "conteo_auditoria" : "conteo_jefe_logistico", materialRef:q.materialRef, materialId:c.materialId || safeId(q.materialRef), description:q.description || c.description || "", location:q.location || c.location || "", date:q.date || todayISO(), systemQty:Number(q.systemQty || 0), countedQty:Number(q.countedQty || 0), diff:Number(q.diff || 0), absDiff:Number(q.absDiff || 0), unitCost:Number(q.unitCost || 0), diffPercent:Number(q.diffPercent || 0), diffValue:Number(q.diffValue || 0), severity:q.severity || "", recommendedAction:q.recommendedAction || "", result:Number(q.absDiff || 0) > 0.0001 ? "Diferencia" : "Exacto", cause:q.cause || "N/A", support:q.support || "", obs:q.obs || "", countedByUid:q.countedByUid, countedByEmail:q.countedByEmail, countedByRole:q.countedByRole, countStartedAt:q.countStartedAt || "", countDurationSeconds:Number(q.countDurationSeconds || 0), offlineLocalId:q.localId, syncedFromOffline:true, createdAt:nowTS() });
+  await updateDoc(doc(db, "cases", caseId), { lastCountId:countRef.id, lastSystemQty:Number(q.systemQty || 0), lastCountedQty:Number(q.countedQty || 0), diff:Number(q.diff || 0), diffPercent:Number(q.diffPercent || 0), diffValue:Number(q.diffValue || 0), severity:q.severity || "", lastComment:q.obs || "Conteo de caso sincronizado desde modo offline.", updatedAt:nowTS(), updatedByUid:q.countedByUid, updatedByEmail:q.countedByEmail, history:arrayUnion({ at:new Date().toISOString(), by:q.countedByEmail, role:q.countedByRole, action:q.mode === "auditoria" ? "conteo_auditoria_offline" : "conteo_jefe_offline", comment:q.obs || "Sincronizado desde offline." }) });
+}
+async function flushOfflineCountQueue(){
+  updateOfflineStatus();
+  if(navigator.onLine === false || !state.offlineQueue?.length) return;
+  const pending = [...state.offlineQueue];
+  let ok = 0;
+  for(const item of pending){
+    try{
+      if(item.kind === "task") await persistQueuedTaskCount(item);
+      else await persistQueuedCaseCount(item);
+      state.offlineQueue = state.offlineQueue.filter(x => x.localId !== item.localId);
+      ok++;
+      saveOfflineQueue();
+    }catch(err){
+      console.warn("No se pudo sincronizar conteo offline", item, err);
+      break;
+    }
+  }
+  if(ok){
+    toast(`Modo offline: ${ok} conteo(s) sincronizados.`);
+    await refreshAll();
   }
 }
 
@@ -1072,6 +1243,7 @@ function renderAll(){
   renderHistory();
   renderCableTasks();
   renderCases();
+  renderExecutiveDashboard();
   renderMaterials();
   renderSettings();
   renderLineCatalog();
@@ -1501,6 +1673,79 @@ function renderIndicators(){
       <div class="mini-table"><h4>Productividad de conteo</h4>${prodRows.length ? prodRows.map(r => `<div class="mini-row"><span>${esc(r.user)}</span><b>${fmt(r.qty)}</b><small>${fmt(Math.round(r.avg/60))} min prom.</small></div>`).join("") : `<div class="empty small">Aún no hay tiempos registrados.</div>`}</div>
       <div class="mini-table"><h4>Semáforo de conteos</h4>${severityRows.map(r => `<div class="mini-row"><span><span class="pill ${severityClass(r.sev)}">${severityLabel(r.sev)}</span></span><b>${fmt(r.qty)}</b><small>conteos</small></div>`).join("")}</div>
     `;
+  }
+}
+
+function totalDiffValue(rows){
+  return rows.reduce((s,x) => s + (Number(x.diffValue || 0) || Math.abs(Number(x.diff || 0)) * Number(x.unitCost || 0)), 0);
+}
+function avgCountDuration(counts = state.counts){
+  const durations = counts.map(c => Number(c.countDurationSeconds || 0)).filter(v => v > 0);
+  return durations.length ? durations.reduce((s,v)=>s+v,0) / durations.length : 0;
+}
+function intelligentAlertRows(){
+  const alerts = [];
+  const criticalLimit = Number(state.settings.criticalDiffValue || 500000);
+  state.cases.filter(c => c.status === "pending_gerencia").forEach(c => {
+    const value = Number(c.diffValue || 0) || Math.abs(Number(c.diff || 0)) * Number(c.unitCost || 0);
+    alerts.push({ level:value >= criticalLimit ? "red" : "yellow", title:"Caso pendiente de decisión", body:`${c.materialRef || ""} · ${money(value)} · ${c.lastComment || "Sin comentario"}`, action:"Revisar informe PDF antes de cerrar o ajustar." });
+  });
+  repeatedDifferenceRows(state.counts).slice(0,4).forEach(r => alerts.push({ level:"red", title:"Referencia repetida", body:`${r.ref} aparece con diferencia ${r.qty} veces. Impacto ${money(r.value)}.`, action:"Solicitar revisión de ubicación, unidad de medida o movimiento documental." }));
+  heatMapRows(state.counts).slice(0,4).filter(r => r.value >= criticalLimit || r.qty >= 3).forEach(r => alerts.push({ level:"yellow", title:"Ubicación caliente", body:`${r.location}: ${r.qty} diferencias y ${money(r.value)}.`, action:"Programar revisión física de la ubicación." }));
+  const avg = avgCountDuration();
+  if(avg > 0 && avg > 20 * 60) alerts.push({ level:"blue", title:"Conteo lento", body:`Tiempo promedio ${fmt(Math.round(avg/60))} minutos por conteo.`, action:"Revisar si las ubicaciones están claras o si faltan etiquetas QR." });
+  if(state.offlineQueue?.length) alerts.push({ level:"blue", title:"Pendientes offline", body:`${state.offlineQueue.length} conteo(s) guardados localmente sin sincronizar.`, action:"Conectar a internet y mantener abierta la APP para sincronizar." });
+  return alerts.slice(0,12);
+}
+function heatRowHtml(r, maxValue){
+  const pct = maxValue ? Math.max(8, Math.round(Number(r.value || 0) / maxValue * 100)) : 0;
+  const cls = pct >= 70 ? "red" : pct >= 35 ? "yellow" : "blue";
+  return `<div class="heat-row"><div><b>${esc(r.location)}</b><small>${fmt(r.qty)} diferencia(s) · ${money(r.value)}</small></div><span class="heat-bar ${cls}" style="--w:${pct}%"></span></div>`;
+}
+function rankingRowHtml(r, idx){
+  return `<div class="ranking-row"><strong>${idx + 1}</strong><span>${esc(r.cause || r.ref || "Sin dato")}</span><b>${fmt(r.qty)}</b><small>${money(r.value || 0)}</small></div>`;
+}
+function renderExecutiveDashboard(){
+  const box = $("#executiveDashboard");
+  const heat = $("#gerenciaHeatMap");
+  const causes = $("#gerenciaCauseRanking");
+  const alertsEl = $("#gerenciaSmartAlerts");
+  if(!box && !heat && !causes && !alertsEl) return;
+  const totalCounts = state.counts.length;
+  const diffs = state.counts.filter(c => Number(c.absDiff || 0) > 0);
+  const accuracy = totalCounts ? Math.round((totalCounts - diffs.length) / totalCounts * 100) : 0;
+  const diffValue = totalDiffValue(state.counts);
+  const countedValue = state.counts.reduce((s,c)=>s + Math.abs(Number(c.systemQty || 0) * Number(c.unitCost || 0)), 0);
+  const valueAccuracy = countedValue ? Math.max(0, Math.round((1 - diffValue / countedValue) * 100)) : 0;
+  const pendingMgmt = state.cases.filter(c => c.status === "pending_gerencia");
+  const criticalCases = state.cases.filter(c => c.severity === "critica" || c.severity === "crítica" || (Number(c.diffValue || 0) >= Number(state.settings.criticalDiffValue || 500000)));
+  const avgMin = avgCountDuration() ? Math.round(avgCountDuration()/60) : 0;
+  if(box){
+    box.innerHTML = `
+      <article class="executive-hero card">
+        <div><span class="tag dark">Tablero gerencial</span><h3>Decisiones de inventario cíclico</h3><p>Vista resumida para aprobar, devolver o autorizar ajustes con base en valor, criticidad, causa y trazabilidad.</p></div>
+        <div class="executive-kpis">
+          <div><span>Exactitud cantidad</span><b>${accuracy}%</b></div>
+          <div><span>Exactitud valor</span><b>${valueAccuracy}%</b></div>
+          <div><span>Valor diferencia</span><b>${money(diffValue)}</b></div>
+          <div><span>Pendientes gerencia</span><b>${fmt(pendingMgmt.length)}</b></div>
+          <div><span>Críticos</span><b>${fmt(criticalCases.length)}</b></div>
+          <div><span>Tiempo promedio</span><b>${avgMin ? fmt(avgMin) + " min" : "—"}</b></div>
+        </div>
+      </article>`;
+  }
+  const heatRows = heatMapRows(state.counts);
+  if(heat){
+    const max = Math.max(1, ...heatRows.map(r => Number(r.value || 0)));
+    heat.innerHTML = heatRows.length ? heatRows.map(r => heatRowHtml(r, max)).join("") : `<div class="empty small">Sin diferencias por ubicación.</div>`;
+  }
+  const causeRows = causeParetoRows(state.counts);
+  if(causes){
+    causes.innerHTML = causeRows.length ? causeRows.map((r,i) => rankingRowHtml(r,i)).join("") : `<div class="empty small">Sin causas registradas.</div>`;
+  }
+  const alerts = intelligentAlertRows();
+  if(alertsEl){
+    alertsEl.innerHTML = alerts.length ? alerts.map(a => `<div class="smart-alert ${a.level}"><b>${esc(a.title)}</b><span>${esc(a.body)}</span><small>${esc(a.action)}</small></div>`).join("") : `<div class="empty small">Sin alertas inteligentes en este momento.</div>`;
   }
 }
 
@@ -2211,27 +2456,29 @@ async function generateCableTasks(showToast = true){
 
 
 function openTaskCountDialog(taskId){
-  const task = state.tasks.find(t => t.id === taskId);
-  if(!task) return;
+  const rawTask = state.tasks.find(t => t.id === taskId);
+  if(!rawTask) return;
+  const meta = displayMeta(rawTask);
+  const task = { ...rawTask, description:meta.description, location:meta.location || rawTask.location || "", unit:meta.unit, systemQty:meta.systemQty, unitCost:meta.unitCost, inventoryValue:meta.inventoryValue, isCable:meta.isCable };
   state.express.selectedTaskId = taskId;
   localStorage.setItem("expressSelectedTaskId", taskId);
   state.express.countStartedAt = new Date().toISOString();
-  const cable = task.taskType === "cable_metraje";
+  const cable = task.taskType === "cable_metraje" || task.type === "cable_metraje" || meta.isCable;
   $("#countTaskId").value = task.id;
   $("#countCaseId").value = "";
   $("#countMode").value = "task";
-  $("#countMaterialRef").value = task.materialRef;
+  $("#countMaterialRef").value = meta.ref || task.materialRef;
   $("#countDate").value = todayISO();
   if($("#countStartedAt")) $("#countStartedAt").value = state.express.countStartedAt;
-  $("#countSystemQty").value = Number(task.systemQty || 0);
-  $("#countQty").value = shouldBlindCount() ? "" : Number(task.systemQty || 0);
-  if($("#countUnitCost")) $("#countUnitCost").value = Number(task.unitCost || 0);
+  $("#countSystemQty").value = Number(meta.systemQty || 0);
+  $("#countQty").value = shouldBlindCount() ? "" : Number(meta.systemQty || 0);
+  if($("#countUnitCost")) $("#countUnitCost").value = Number(meta.unitCost || 0);
   $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = ""; if($("#countPhoto")) $("#countPhoto").value = "";
   setSystemQtyVisibility(shouldBlindCount());
-  $("#countDialogTitle").textContent = cable ? "Registrar metraje físico" : "Registrar conteo";
+  $("#countDialogTitle").textContent = cable ? "Registrar metraje físico" : "Registrar conteo físico";
   $("#systemQtyLabel").childNodes[0].textContent = cable ? "Metros sistema" : "Stock sistema";
-  $("#countQtyLabel").childNodes[0].textContent = cable ? "Metros físicos contados" : "Cantidad contada";
-  $("#countDialogSubtitle").textContent = `${task.materialRef} · ${task.description || ""} · ${task.location || ""}`;
+  $("#countQtyLabel").childNodes[0].textContent = cable ? "Metros físicos contados" : "Cantidad física contada";
+  $("#countDialogSubtitle").textContent = `${meta.ref} · ${meta.description || "Referencia sin nombre"} · ${meta.location || "Sin ubicación"}`;
   updateCountPreview();
   $("#countDialog").showModal();
 }
@@ -2406,6 +2653,21 @@ async function saveCount(e){
   const photoFile = $("#countPhoto")?.files?.[0] || null;
   const cause = $("#countCause").value || "N/A";
   const obs = $("#countObs").value || "";
+
+  if(navigator.onLine === false){
+    const task = taskId ? state.tasks.find(t => t.id === taskId) : null;
+    const caseItem = caseId ? state.cases.find(c => c.id === caseId) : null;
+    const context = task || caseItem;
+    const diffMeta = buildDiffMeta(diff, systemQty, Number($("#countUnitCost")?.value || context?.unitCost || 0));
+    if(photoFile){ toast("Sin conexión no se puede subir foto a Drive. Espera conexión o guarda soporte textual si la severidad lo permite.", "error"); return; }
+    if(requiresPhotoForCount(diffMeta, context)){ toast("Este conteo requiere foto obligatoria; debe guardarse cuando vuelva la conexión.", "error"); return; }
+    if(requiresSupportForCount(diffMeta) && !support && !obs && cause === "N/A"){ toast("Registra causa, soporte u observación para dejar trazabilidad de la diferencia.", "error"); return; }
+    enqueueOfflineCount(buildOfflinePayload({ task, caseItem, mode, saveAndNext }));
+    $("#countDialog").close();
+    renderAll();
+    if(saveAndNext && taskId) openNextExpressTask(taskId);
+    return;
+  }
 
   if(taskId){
     const taskSnap = await getDoc(doc(db, "countTasks", taskId));
@@ -2721,7 +2983,57 @@ function generateCaseReport(caseId){
   const history = Array.isArray(c.history) ? c.history : [];
   const auditEntries = Array.isArray(c.auditEntries) ? c.auditEntries : [];
   const jefeEntries = Array.isArray(c.jefeEntries) ? c.jefeEntries : [];
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Informe ${esc(c.materialRef)}</title><style>body{font-family:Century Gothic,Arial;padding:28px;color:#15352e}h1{color:#0b5d45}table{width:100%;border-collapse:collapse;margin-top:14px}td,th{border:1px solid #d7e5df;padding:8px;text-align:left}th{background:#edf6f2}.box{border:1px solid #d7e5df;padding:14px;border-radius:12px;margin:12px 0}</style></head><body><h1>Informe de diferencia de inventario</h1><div class="box"><b>Referencia:</b> ${esc(c.materialRef)}<br><b>Descripción:</b> ${esc(c.description || "")}<br><b>Ubicación:</b> ${esc(c.location || "")}<br><b>Estado:</b> ${esc(c.status)}<br><b>Diferencia:</b> ${fmt(c.diff)}</div><h2>Comentarios por referencia</h2><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Rol</th><th>Acción</th><th>Comentario</th></tr></thead><tbody>${history.map(h => `<tr><td>${esc(h.at || "")}</td><td>${esc(h.by || "")}</td><td>${esc(h.role || "")}</td><td>${esc(h.action || h.mode || "")}</td><td>${esc(h.comment || "")}</td></tr>`).join("")}</tbody></table><h2>Verificación jefe logístico</h2><table><thead><tr><th>Fecha</th><th>Sistema</th><th>Físico</th><th>Diferencia</th><th>Comentario</th></tr></thead><tbody>${jefeEntries.map(h => `<tr><td>${esc(h.at || "")}</td><td>${fmt(h.systemQty)}</td><td>${fmt(h.countedQty)}</td><td>${fmt(h.diff)}</td><td>${esc(h.comment || "")}</td></tr>`).join("")}</tbody></table><h2>Contabilización auditoría</h2><table><thead><tr><th>Fecha</th><th>Sistema</th><th>Físico</th><th>Diferencia</th><th>Comentario</th></tr></thead><tbody>${auditEntries.map(h => `<tr><td>${esc(h.at || "")}</td><td>${fmt(h.systemQty)}</td><td>${fmt(h.countedQty)}</td><td>${fmt(h.diff)}</td><td>${esc(h.comment || "")}</td></tr>`).join("")}</tbody></table><p>Generado por ${esc(state.user.email)} · ${new Date().toLocaleString("es-CO")}</p></body></html>`;
+  const relatedCounts = state.counts.filter(x => x.caseId === caseId || x.taskId === c.sourceTaskId || x.id === c.lastCountId);
+  const title = `Informe caso ${c.materialRef || "inventario"}`;
+  if(window.jspdf?.jsPDF){
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation:"portrait", unit:"pt", format:"letter" });
+    const margin = 42;
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    let y = 44;
+    const addPageIfNeeded = (h=40) => { if(y + h > pageH - 42){ doc.addPage(); y = 44; } };
+    const text = (value, x, yy, opts={}) => doc.text(String(value ?? ""), x, yy, opts);
+    const wrapped = (value, x, yy, maxW, lineH=13) => {
+      const lines = doc.splitTextToSize(String(value ?? ""), maxW);
+      lines.forEach(line => { addPageIfNeeded(lineH); text(line, x, y); y += lineH; });
+      return lines.length;
+    };
+    doc.setFillColor(11,45,92);
+    doc.rect(0,0,pageW,86,"F");
+    doc.setTextColor(255,255,255);
+    doc.setFont("helvetica","bold"); doc.setFontSize(18); text("Inventario Cíclico SIESA", margin, 36);
+    doc.setFontSize(12); doc.setFont("helvetica","normal"); text("Informe automático PDF por caso", margin, 58);
+    doc.setTextColor(13,44,82); y = 112;
+    doc.setFont("helvetica","bold"); doc.setFontSize(16); text(title, margin, y); y += 22;
+    const summary = [
+      ["Referencia", c.materialRef || ""], ["Descripción", c.description || ""], ["Ubicación", c.location || ""], ["Estado", c.status || ""],
+      ["Diferencia", fmt(c.diff || 0)], ["% diferencia", `${fmt(c.diffPercent || 0)}%`], ["Impacto", money(c.diffValue || 0)], ["Severidad", severityLabel(c.severity || "")],
+      ["Último comentario", c.lastComment || ""]
+    ];
+    doc.setFontSize(10);
+    summary.forEach(([k,v]) => { addPageIfNeeded(28); doc.setFont("helvetica","bold"); text(k + ":", margin, y); doc.setFont("helvetica","normal"); wrapped(v, margin + 105, y, pageW - margin*2 - 105, 12); y += 8; });
+    y += 8;
+    const section = (name) => { addPageIfNeeded(34); doc.setFillColor(238,245,255); doc.roundedRect(margin, y, pageW-margin*2, 24, 6, 6, "F"); doc.setFont("helvetica","bold"); doc.setFontSize(12); doc.setTextColor(11,45,92); text(name, margin+10, y+16); y += 38; doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(13,44,82); };
+    section("Historial y comentarios por referencia");
+    if(history.length){ history.forEach(h => { addPageIfNeeded(44); doc.setFont("helvetica","bold"); text(`${formatDateTime(h.at || h.createdAt)} · ${h.role || ""} · ${h.action || h.mode || ""}`, margin, y); y += 12; doc.setFont("helvetica","normal"); wrapped(`${h.by || ""}: ${h.comment || ""}`, margin, y, pageW-margin*2, 11); y += 6; }); }
+    else { text("Sin historial registrado.", margin, y); y += 16; }
+    section("Verificación jefe logístico");
+    if(jefeEntries.length){ jefeEntries.forEach(h => { addPageIfNeeded(34); wrapped(`${h.at || ""} · Sistema ${fmt(h.systemQty)} · Físico ${fmt(h.countedQty)} · Diferencia ${fmt(h.diff)} · ${h.comment || ""}`, margin, y, pageW-margin*2, 11); y += 6; }); }
+    else { text("Sin verificación adicional registrada.", margin, y); y += 16; }
+    section("Contabilización auditoría");
+    if(auditEntries.length){ auditEntries.forEach(h => { addPageIfNeeded(34); wrapped(`${h.at || ""} · Sistema ${fmt(h.systemQty)} · Físico ${fmt(h.countedQty)} · Diferencia ${fmt(h.diff)} · ${h.comment || ""}`, margin, y, pageW-margin*2, 11); y += 6; }); }
+    else { text("Sin contabilización de auditoría registrada.", margin, y); y += 16; }
+    section("Conteos relacionados");
+    if(relatedCounts.length){ relatedCounts.forEach(x => { addPageIfNeeded(34); wrapped(`${x.date || formatDateTime(x.createdAt)} · ${x.materialRef || ""} · Sistema ${fmt(x.systemQty)} · Físico ${fmt(x.countedQty)} · Dif. ${fmt(x.diff)} · ${money(x.diffValue || 0)} · ${x.countedByEmail || ""}`, margin, y, pageW-margin*2, 11); y += 6; }); }
+    else { text("No hay conteos recientes cargados para este caso en memoria local.", margin, y); y += 16; }
+    addPageIfNeeded(42);
+    y += 10; doc.setFontSize(8); doc.setTextColor(100,117,141);
+    text(`Generado por ${state.user?.email || ""} · ${new Date().toLocaleString("es-CO")}`, margin, y);
+    doc.save(`informe_inventario_${safeId(c.materialRef || "caso")}_${todayISO()}.pdf`);
+    return;
+  }
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Informe ${esc(c.materialRef)}</title><style>body{font-family:Century Gothic,Arial;padding:28px;color:#15352e}h1{color:#0b5d45}table{width:100%;border-collapse:collapse;margin-top:14px}td,th{border:1px solid #d7e5df;padding:8px;text-align:left}th{background:#edf6f2}.box{border:1px solid #d7e5df;padding:14px;border-radius:12px;margin:12px 0}</style></head><body><h1>Informe de diferencia de inventario</h1><div class="box"><b>Referencia:</b> ${esc(c.materialRef)}<br><b>Descripción:</b> ${esc(c.description || "")}<br><b>Ubicación:</b> ${esc(c.location || "")}<br><b>Estado:</b> ${esc(c.status)}<br><b>Diferencia:</b> ${fmt(c.diff)}<br><b>Impacto:</b> ${money(c.diffValue || 0)}</div><h2>Comentarios por referencia</h2><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Rol</th><th>Acción</th><th>Comentario</th></tr></thead><tbody>${history.map(h => `<tr><td>${esc(h.at || "")}</td><td>${esc(h.by || "")}</td><td>${esc(h.role || "")}</td><td>${esc(h.action || h.mode || "")}</td><td>${esc(h.comment || "")}</td></tr>`).join("")}</tbody></table><h2>Verificación jefe logístico</h2><table><thead><tr><th>Fecha</th><th>Sistema</th><th>Físico</th><th>Diferencia</th><th>Comentario</th></tr></thead><tbody>${jefeEntries.map(h => `<tr><td>${esc(h.at || "")}</td><td>${fmt(h.systemQty)}</td><td>${fmt(h.countedQty)}</td><td>${fmt(h.diff)}</td><td>${esc(h.comment || "")}</td></tr>`).join("")}</tbody></table><h2>Contabilización auditoría</h2><table><thead><tr><th>Fecha</th><th>Sistema</th><th>Físico</th><th>Diferencia</th><th>Comentario</th></tr></thead><tbody>${auditEntries.map(h => `<tr><td>${esc(h.at || "")}</td><td>${fmt(h.systemQty)}</td><td>${fmt(h.countedQty)}</td><td>${fmt(h.diff)}</td><td>${esc(h.comment || "")}</td></tr>`).join("")}</tbody></table><p>Generado por ${esc(state.user.email)} · ${new Date().toLocaleString("es-CO")}</p></body></html>`;
   const blob = new Blob([html], { type:"text/html;charset=utf-8" });
   const url = URL.createObjectURL(blob); const a = document.createElement("a");
   a.href = url; a.download = `informe_inventario_${c.materialRef}_${todayISO()}.html`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500);

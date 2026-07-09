@@ -36,10 +36,10 @@
   ],
   "shortcuts": [
     {
-      "name": "Conteo obligatorio",
-      "short_name": "Conteo",
-      "description": "Abrir el panel de inventario.",
-      "url": "./index.html?view=inventory",
+      "name": "Conteo Express",
+      "short_name": "Express",
+      "description": "Abrir el flujo rápido de conteo por ubicación y referencia.",
+      "url": "./index.html?view=express",
       "icons": [
         {
           "src": "./icons/icon-192.png",

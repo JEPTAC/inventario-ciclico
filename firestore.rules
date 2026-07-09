@@ -59,15 +59,24 @@ service cloud.firestore {
     match /countTasks/{taskId} {
       allow read: if active();
 
-      // La generación de tareas la hace jefe logístico o super admin.
-      allow create: if hasAnyRole(["jefe_logistico"]);
+      // La generación normal de agenda la hace jefe logístico o super admin.
+      // El rol inventario también puede crear únicamente reconteos derivados de una diferencia,
+      // porque el flujo operativo de la app genera esa segunda tarea al guardar el primer conteo con novedad.
+      allow create: if hasAnyRole(["jefe_logistico"])
+        || (
+          hasAnyRole(["inventario"])
+          && request.resource.data.status == "recount_required"
+          && request.resource.data.previousTaskId is string
+          && request.resource.data.previousCountId is string
+        );
 
-      // Inventario solo puede avanzar tareas registrando conteos; jefe puede validar novedades.
+      // Inventario solo puede avanzar tareas registrando conteos.
+      // Se incluye lastComment porque app.js lo escribe para dejar trazabilidad visible en la tabla.
       allow update: if hasAnyRole(["jefe_logistico"])
         || (
           hasAnyRole(["inventario"])
           && request.resource.data.diff(resource.data).changedKeys()
-            .hasOnly(["status", "lastCountId", "updatedAt"])
+            .hasOnly(["status", "lastCountId", "updatedAt", "lastComment"])
         );
 
       allow delete: if superAdmin();

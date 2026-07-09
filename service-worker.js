@@ -1,4 +1,4 @@
-const CACHE_NAME = "inventario-siesa-v29-express";
+const CACHE_NAME = "inventario-siesa-v30-operativo";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -36,6 +36,11 @@ self.addEventListener("fetch", event => {
 
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+
+  if (url.pathname.includes("/v1/create-qr-code/") || url.hostname.includes("api.qrserver.com")) {
+    event.respondWith(fetch(req).catch(() => caches.match("./index.html")));
+    return;
+  }
 
   if (req.cache === "reload" || req.cache === "no-store" || req.cache === "no-cache") {
     event.respondWith(fetch(req).catch(() => caches.match(req).then(cached => cached || caches.match("./index.html"))));
