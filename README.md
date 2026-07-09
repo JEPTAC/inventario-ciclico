@@ -1,4 +1,4 @@
-# Inventario Cíclico SIESA · V34 Conteo simple por auxiliar
+# Inventario Cíclico SIESA · V35 Corrección menú Inventario
 
 Esta versión simplifica el flujo del rol inventario/auxiliar. El auxiliar trabaja en conteo ciego: no ve stock del sistema, diferencia, valor inventario, riesgo ni indicadores administrativos. Solo confirma referencia, nombre, ubicación, unidad, registra la cantidad física y guarda.
 
@@ -421,3 +421,13 @@ Pruebas realizadas:
 Nota operativa:
 
 Después de subir esta versión, publicar también `firestore.rules` en Firebase. Luego recargar la app con Ctrl + F5 o limpiar caché para que el nuevo Service Worker tome la versión `v27-qa`.
+
+## V35 · Corrección permisos rol Inventario
+
+Esta versión corrige la visualización de módulos para usuarios de inventario/auxiliares.
+
+- El rol `inventario` ahora ve obligatoriamente **Conteo simple**.
+- El rol `inventario` ahora ve obligatoriamente **Etiquetas / Códigos** como **Etiquetas diarias**.
+- Se agregó normalización de roles para perfiles existentes creados como `inventory`, `auxiliar`, `auxiliar_inventario`, `operario`, `operador`, `bodega` o variantes similares.
+- No se abren módulos administrativos al auxiliar; solo operación de conteo, pendientes, historial, metraje cuando aplica y etiquetas.
+- Se actualizó el Service Worker a V35 para evitar caché viejo.

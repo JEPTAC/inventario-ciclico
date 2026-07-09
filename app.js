@@ -409,7 +409,22 @@ function logSync(message){
   if(!box) return;
   box.textContent = `[${new Date().toLocaleTimeString("es-CO")}] ${message}\n` + box.textContent;
 }
-function role(){ return state.profile?.role === "admin" ? "super_admin" : state.profile?.role; }
+function normalizeRole(rawRole){
+  const key = String(rawRole || "inventario")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s-]+/g, "_");
+  const aliases = {
+    admin:"super_admin", administrador:"super_admin", superadmin:"super_admin", super_admin:"super_admin",
+    inventario:"inventario", inventory:"inventario", auxiliar:"inventario", auxiliar_inventario:"inventario", auxiliar_de_inventario:"inventario", operario:"inventario", operador:"inventario", bodega:"inventario", almacen:"inventario", almacenista:"inventario",
+    jefe:"jefe_logistico", jefe_logistico:"jefe_logistico", lider_logistico:"jefe_logistico", logistica:"jefe_logistico", logistico:"jefe_logistico",
+    auditor:"auditoria", auditoria:"auditoria", auditoria_interna:"auditoria",
+    gerente:"gerencia", gerencia:"gerencia"
+  };
+  return aliases[key] || key || "inventario";
+}
+function role(){ return normalizeRole(state.profile?.role); }
 function isSuper(){ return role() === "super_admin"; }
 function hasAny(roles){ return isSuper() || roles.includes(role()); }
 function isOperatorRole(){ return role() === "inventario"; }
