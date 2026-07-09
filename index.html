@@ -51,7 +51,7 @@
         <button class="nav-link" data-view="auditoriaView" data-roles="super_admin,auditoria">Auditoría</button>
         <button class="nav-link" data-view="gerenciaView" data-roles="super_admin,gerencia">Gerencia</button>
         <button class="nav-link" data-view="materialsView">Materiales</button>
-        <button class="nav-link" data-view="qrLabelsView" data-roles="super_admin,jefe_logistico,inventario">Etiquetas QR</button>
+        <button class="nav-link" data-view="qrLabelsView" data-roles="super_admin,jefe_logistico,inventario">Etiquetas / Códigos</button>
         <button class="nav-link" data-view="lineCatalogView">Líneas / Cables</button>
         <button class="nav-link" data-view="indicatorsView">Indicadores</button>
         <button class="nav-link" data-view="configView" data-roles="super_admin,jefe_logistico">Configuración</button>
@@ -238,7 +238,7 @@
         <div class="grid two">
           <article class="card">
             <div class="card-head">
-              <div><h3>Generador de etiquetas QR</h3><p>Imprime etiquetas para ubicación y referencia. El QR guarda texto simple para escanear desde Conteo Express.</p></div>
+              <div><h3>Generador de etiquetas y códigos</h3><p>Crea QR + código de barras interno para referencia, ubicación, estante o material nuevo durante el conteo.</p></div>
               <button id="printQrLabelsBtn" class="btn primary" type="button">Imprimir selección</button>
             </div>
             <div class="config-grid">
@@ -247,17 +247,29 @@
               <label>Tamaño<select id="qrLabelSize"><option value="standard">Estándar 4 columnas</option><option value="large">Grande bodega</option><option value="compact">Compacta</option></select></label>
               <label>Cantidad máxima<input id="qrLimit" type="number" min="1" max="200" value="48"></label>
             </div>
+            <div class="quick-code-panel">
+              <div class="card-head compact"><div><h4>Crear código en el momento</h4><p>Útil cuando en bodega aparece un material o ubicación sin etiqueta. El código interno queda simple: EI-REF-... o EI-UBI-...</p></div><span class="tag blue">V31</span></div>
+              <div class="config-grid">
+                <label>Clase<select id="quickQrKind"><option value="material">Referencia / material</option><option value="location">Ubicación / estante</option></select></label>
+                <label>Referencia<input id="quickQrRef" placeholder="Ej: 105041 / código SIESA"></label>
+                <label>Nombre o descripción<input id="quickQrDescription" placeholder="Nombre visible en etiqueta"></label>
+                <label>Ubicación<input id="quickQrLocation" placeholder="Bodega / pasillo / estante / nivel"></label>
+                <label>Unidad<input id="quickQrUnit" placeholder="und, m, kg, rollo"></label>
+              </div>
+              <div class="button-row"><button id="createQuickLabelBtn" class="btn blue" type="button">Agregar a cola</button><button id="printQuickLabelBtn" class="btn primary" type="button">Imprimir cola</button><button id="clearLabelQueueBtn" class="btn ghost" type="button">Limpiar cola</button></div>
+              <div class="grid two quick-label-area"><div><h4>Vista previa</h4><div id="quickLabelDraft" class="qr-label-grid compact"></div></div><div><h4>Cola de codificación</h4><div id="quickLabelQueue"></div></div></div>
+            </div>
             <div id="qrLabelPreview" class="qr-label-grid"></div>
           </article>
           <article class="card">
             <div class="card-head"><h3>Uso recomendado</h3><span class="tag yellow">Bodega</span></div>
             <div class="summary-list">
-              <div class="summary-item"><span>Ubicación</span><b>Pasillo / estante / nivel</b></div>
-              <div class="summary-item"><span>Referencia</span><b>SKU o código SIESA</b></div>
-              <div class="summary-item"><span>Conteo</span><b>Escanear → contar → guardar</b></div>
-              <div class="summary-item"><span>Auditoría</span><b>QR + evidencia + historial</b></div>
+              <div class="summary-item"><span>Ubicación</span><b>EI-UBI</b></div>
+              <div class="summary-item"><span>Referencia</span><b>EI-REF</b></div>
+              <div class="summary-item"><span>Conteo</span><b>Escanear → contar → etiquetar</b></div>
+              <div class="summary-item"><span>Auditoría</span><b>QR + barras + evidencia</b></div>
             </div>
-            <div class="notice">La generación usa una imagen QR en línea cuando hay internet. Si no carga, la etiqueta conserva el código en texto grande para digitarlo manualmente.</div>
+            <div class="notice">La etiqueta imprime QR exacto, código de barras Code128 y texto grande. Si la imagen no carga, el código EI-REF/EI-UBI queda visible para digitación manual.</div>
           </article>
         </div>
       </section>
@@ -276,7 +288,7 @@
     </section>
   </div>
 
-  <dialog id="countDialog" class="dialog"><form id="countForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="countDialogTitle">Registrar conteo</h3><p id="countDialogSubtitle"></p></div><button type="button" id="closeCountDialog" class="icon-btn">×</button></div><input type="hidden" id="countTaskId"><input type="hidden" id="countCaseId"><input type="hidden" id="countMode"><input type="hidden" id="countMaterialRef"><input type="hidden" id="countUnitCost"><input type="hidden" id="countStartedAt"><div class="form-grid"><label>Fecha<input id="countDate" type="date" required></label><label id="systemQtyLabel">Stock sistema<input id="countSystemQty" type="number" step="0.001" readonly></label><label id="countQtyLabel">Cantidad contada<input id="countQty" type="number" step="0.001" required></label><div class="qty-pad full-span" aria-label="Botones rápidos de cantidad"><button type="button" data-qty-step="-10">-10</button><button type="button" data-qty-step="-5">-5</button><button type="button" data-qty-step="-1">-1</button><button type="button" data-qty-clear="1">Limpiar</button><button type="button" data-qty-step="1">+1</button><button type="button" data-qty-step="5">+5</button><button type="button" data-qty-step="10">+10</button><button type="button" data-qty-step="100">+100</button></div><label>Soporte / documento<input id="countSupport" placeholder="Foto, acta, remisión, salida, PDF"></label><label>Foto del material<input id="countPhoto" type="file" accept="image/*" capture="environment"></label><label>Causa<select id="countCause"><option>N/A</option><option>Error de ubicación</option><option>Salida no registrada</option><option>Ingreso no registrada</option><option>Error documental</option><option>Error de conteo</option><option>Merma, daño o pérdida</option><option>Unidad de medida / conversión</option></select></label><div id="countDiffPreview" class="count-preview full-span"></div><label class="full-span">Comentarios por referencia<textarea id="countObs" rows="4"></textarea></label><div class="notice compact full-span">Si cargas una foto, la app la sube a la misma carpeta de Drive y la nombra con la referencia del material y la fecha del conteo.</div></div><div class="dialog-actions"><button type="button" id="cancelCountBtn" class="btn ghost">Cancelar</button><button type="submit" id="saveCountBtn" class="btn primary">Guardar</button><button type="submit" id="saveNextCountBtn" class="btn blue">Guardar y siguiente</button></div></form></dialog>
+  <dialog id="countDialog" class="dialog"><form id="countForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="countDialogTitle">Registrar conteo</h3><p id="countDialogSubtitle"></p></div><button type="button" id="closeCountDialog" class="icon-btn">×</button></div><input type="hidden" id="countTaskId"><input type="hidden" id="countCaseId"><input type="hidden" id="countMode"><input type="hidden" id="countMaterialRef"><input type="hidden" id="countUnitCost"><input type="hidden" id="countStartedAt"><div id="countCodePanel" class="count-code-panel"></div><div class="form-grid"><label>Fecha<input id="countDate" type="date" required></label><label id="systemQtyLabel">Stock sistema<input id="countSystemQty" type="number" step="0.001" readonly></label><label id="countQtyLabel">Cantidad contada<input id="countQty" type="number" step="0.001" required></label><div class="qty-pad full-span" aria-label="Botones rápidos de cantidad"><button type="button" data-qty-step="-10">-10</button><button type="button" data-qty-step="-5">-5</button><button type="button" data-qty-step="-1">-1</button><button type="button" data-qty-clear="1">Limpiar</button><button type="button" data-qty-step="1">+1</button><button type="button" data-qty-step="5">+5</button><button type="button" data-qty-step="10">+10</button><button type="button" data-qty-step="100">+100</button></div><label>Soporte / documento<input id="countSupport" placeholder="Foto, acta, remisión, salida, PDF"></label><label>Foto del material<input id="countPhoto" type="file" accept="image/*" capture="environment"></label><label>Causa<select id="countCause"><option>N/A</option><option>Error de ubicación</option><option>Salida no registrada</option><option>Ingreso no registrada</option><option>Error documental</option><option>Error de conteo</option><option>Merma, daño o pérdida</option><option>Unidad de medida / conversión</option></select></label><div id="countDiffPreview" class="count-preview full-span"></div><label class="full-span">Comentarios por referencia<textarea id="countObs" rows="4"></textarea></label><div class="notice compact full-span">Si cargas una foto, la app la sube a la misma carpeta de Drive y la nombra con la referencia del material y la fecha del conteo.</div></div><div class="dialog-actions"><button type="button" id="cancelCountBtn" class="btn ghost">Cancelar</button><button type="submit" id="saveCountBtn" class="btn primary">Guardar</button><button type="submit" id="saveNextCountBtn" class="btn blue">Guardar y siguiente</button></div></form></dialog>
 
   <dialog id="caseDialog" class="dialog"><form id="caseActionForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="caseDialogTitle">Gestionar caso</h3><p id="caseDialogSubtitle"></p></div><button type="button" id="closeCaseDialog" class="icon-btn">×</button></div><input type="hidden" id="caseId"><input type="hidden" id="caseAction"><label>Observación / justificación<textarea id="caseComment" rows="5" required placeholder="Explique decisión, soporte o acción correctiva."></textarea></label><div class="dialog-actions"><button type="button" id="cancelCaseBtn" class="btn ghost">Cancelar</button><button type="submit" class="btn primary">Confirmar</button></div></form></dialog>
 

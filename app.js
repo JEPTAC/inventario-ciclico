@@ -70,7 +70,8 @@ const state = {
     countStartedAt: "",
     saveNextRequested: false
   },
-  offlineQueue: JSON.parse(localStorage.getItem("inventarioOfflineCountQueue") || "[]")
+  offlineQueue: JSON.parse(localStorage.getItem("inventarioOfflineCountQueue") || "[]"),
+  labelQueue: JSON.parse(localStorage.getItem("inventarioLabelQueueV31") || "[]")
 };
 
 function showBootError(message, err = null){
@@ -505,6 +506,10 @@ function setupEvents(){
   $("#closeScannerDialog")?.addEventListener("click", closeScanner);
   $("#manualScanApplyBtn")?.addEventListener("click", applyManualScanValue);
   ["#qrSearch", "#qrType", "#qrLimit", "#qrLabelSize"].forEach(sel => $(sel)?.addEventListener("input", renderQrLabels));
+  ["#quickQrKind", "#quickQrRef", "#quickQrDescription", "#quickQrLocation", "#quickQrUnit"].forEach(sel => $(sel)?.addEventListener("input", renderQuickLabelDraft));
+  $("#createQuickLabelBtn")?.addEventListener("click", createQuickLabelFromForm);
+  $("#printQuickLabelBtn")?.addEventListener("click", printLabelQueue);
+  $("#clearLabelQueueBtn")?.addEventListener("click", clearLabelQueue);
   $("#printQrLabelsBtn")?.addEventListener("click", printQrLabels);
   $$('[data-qty-step]').forEach(btn => btn.addEventListener("click", () => bumpCountQty(Number(btn.dataset.qtyStep || 0))));
   $$('[data-qty-clear]').forEach(btn => btn.addEventListener("click", clearCountQty));
@@ -931,9 +936,13 @@ function expressTaskDetail(t){
       <div><span>Valor inventario</span><b>${money(value)}</b></div>
       <div><span>Motivo riesgo</span><b>${esc(risk.reasons)}</b></div>
     </div>
+    <div class="express-code-strip"><span>Código interno sugerido</span><b>${esc(inventoryCode("material", meta.ref || ""))}</b><small>QR exacto: MAT:${esc(meta.ref || "")}</small></div>
     <div class="button-row express-main-actions">
       <button class="btn primary big-action" type="button" data-express-count="${esc(t.id)}">Contar ahora</button>
       <button class="btn secondary" type="button" data-copy-ref="${esc(meta.ref || "")}">Copiar ref</button>
+      <button class="btn blue" type="button" data-label-task="${esc(t.id)}" data-label-kind="material">Etiqueta ref</button>
+      <button class="btn secondary" type="button" data-label-task="${esc(t.id)}" data-label-kind="location">Etiqueta ubicación</button>
+      <button class="btn warn" type="button" data-print-label-task="${esc(t.id)}" data-label-kind="material">Imprimir ref</button>
     </div>
   </div>`;
 }
@@ -958,6 +967,8 @@ function bindExpressButtons(){
   $$('[data-copy-ref]').forEach(btn => btn.addEventListener("click", async () => {
     try{ await navigator.clipboard.writeText(btn.dataset.copyRef || ""); toast("Referencia copiada."); }catch(e){ toast(btn.dataset.copyRef || ""); }
   }));
+  $$('[data-label-task]').forEach(btn => btn.addEventListener("click", () => addTaskLabelToQueue(btn.dataset.labelTask, btn.dataset.labelKind || "material")));
+  $$('[data-print-label-task]').forEach(btn => btn.addEventListener("click", () => printTaskLabel(btn.dataset.printLabelTask, btn.dataset.labelKind || "material")));
 }
 function clearExpressFilters(){
   if($("#expressLocationInput")) $("#expressLocationInput").value = "";
@@ -967,11 +978,60 @@ function clearExpressFilters(){
   state.express.selectedRef = "";
   renderExpress();
 }
+function internalCodeSlug(value){
+  return String(value || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 34) || "SIN-CODIGO";
+}
+function inventoryCode(kind, value){
+  const type = kind === "location" ? "UBI" : kind === "bin" ? "BIN" : "REF";
+  return `EI-${type}-${internalCodeSlug(value)}`;
+}
+function inventoryPayload(kind, value, extra = {}){
+  const code = inventoryCode(kind, value);
+  const ref = String(extra.ref || (kind === "material" ? value : "")).trim();
+  const loc = String(extra.location || (kind === "location" ? value : "")).trim();
+  const desc = String(extra.description || "").trim();
+  const unit = String(extra.unit || "").trim();
+  return [`EI`, kind === "location" ? "LOC" : "MAT", code, ref ? `REF:${ref}` : "", loc ? `LOC:${loc}` : "", unit ? `UM:${unit}` : "", desc ? `DESC:${desc.slice(0,90)}` : ""].filter(Boolean).join("|");
+}
+function resolveInternalCode(value){
+  const raw = String(value || "").trim();
+  const upper = raw.toUpperCase();
+  if(!upper.startsWith("EI-")) return null;
+  if(upper.startsWith("EI-UBI-") || upper.startsWith("EI-BIN-")){
+    const loc = [...new Set(state.materials.map(m => String(m.location || "").trim()).filter(Boolean))]
+      .find(l => inventoryCode("location", l) === upper || internalCodeSlug(l) === upper.replace(/^EI-(UBI|BIN)-/, ""));
+    return loc ? { mode:"location", value:loc, code:upper } : { mode:"location", value:raw.replace(/^EI-(UBI|BIN)-/i, ""), code:upper };
+  }
+  if(upper.startsWith("EI-REF-") || upper.startsWith("EI-MAT-")){
+    const mat = state.materials.find(m => inventoryCode("material", m.ref) === upper || internalCodeSlug(m.ref) === upper.replace(/^EI-(REF|MAT)-/, ""));
+    return mat ? { mode:"ref", value:mat.ref, code:upper } : { mode:"ref", value:raw.replace(/^EI-(REF|MAT)-/i, ""), code:upper };
+  }
+  return null;
+}
 function normalizeScanPayload(raw){
   const value = String(raw || "").trim();
   const upper = value.toUpperCase();
-  if(upper.startsWith("LOC:")) return { mode:"location", value:value.slice(4).trim() };
+  if(!value) return { mode:state.express.scanMode || "ref", value:"" };
+  if(upper.startsWith("EI|")){
+    const parts = value.split("|");
+    const kind = (parts[1] || "").toUpperCase();
+    const fields = {};
+    parts.slice(3).forEach(part => {
+      const idx = part.indexOf(":");
+      if(idx > -1) fields[part.slice(0, idx).toUpperCase()] = part.slice(idx + 1);
+    });
+    if(kind === "LOC") return { mode:"location", value:fields.LOC || fields.UBI || parts[2] || "", code:parts[2] || "" };
+    if(kind === "MAT") return { mode:"ref", value:fields.REF || parts[2] || "", code:parts[2] || "" };
+  }
+  if(upper.startsWith("LOC:") || upper.startsWith("UBI:")) return { mode:"location", value:value.slice(4).trim() };
   if(upper.startsWith("MAT:") || upper.startsWith("REF:")) return { mode:"ref", value:value.slice(4).trim() };
+  const internal = resolveInternalCode(value);
+  if(internal) return internal;
   return { mode:state.express.scanMode || "ref", value };
 }
 async function openScanner(mode){
@@ -1024,7 +1084,10 @@ function applyScanValue(raw){
   }else{
     if($("#expressRefInput")) $("#expressRefInput").value = parsed.value;
     state.express.selectedRef = parsed.value;
-    const match = state.tasks.find(t => norm(t.materialRef) === norm(parsed.value) || norm(t.materialRef).includes(norm(parsed.value)));
+    const match = state.tasks.find(t => {
+      const meta = displayMeta(t);
+      return norm(t.materialRef) === norm(parsed.value) || norm(meta.ref) === norm(parsed.value) || norm(t.materialRef).includes(norm(parsed.value)) || norm(inventoryCode("material", meta.ref || t.materialRef)).includes(norm(parsed.code || parsed.value));
+    });
     if(match) state.express.selectedTaskId = match.id;
     toast(match ? "Referencia encontrada." : "Referencia aplicada como filtro.");
   }
@@ -1079,6 +1142,111 @@ function openNextExpressTask(previousTaskId=""){
     toast("No quedan más tareas abiertas para el filtro actual.");
   }
 }
+function labelItemFromMaterial(m){
+  const meta = displayMeta({ materialRef:m.ref, ...m });
+  return {
+    kind:"material",
+    label:meta.ref,
+    value:meta.ref,
+    ref:meta.ref,
+    location:meta.location || "",
+    description:meta.description || "Referencia",
+    unit:meta.unit || "",
+    data:inventoryPayload("material", meta.ref, meta),
+    code:inventoryCode("material", meta.ref),
+    sub:meta.description || meta.location || "Referencia"
+  };
+}
+function labelItemFromLocation(location){
+  const loc = String(location || "").trim();
+  const count = state.materials.filter(m => norm(m.location) === norm(loc)).length;
+  return { kind:"location", label:loc, value:loc, location:loc, description:`Ubicación física · ${fmt(count)} referencia(s)`, unit:"", data:inventoryPayload("location", loc, { location:loc }), code:inventoryCode("location", loc), sub:`Ubicación física · ${fmt(count)} referencia(s)` };
+}
+function buildManualLabelItem(){
+  const kind = $("#quickQrKind")?.value || "material";
+  const ref = String($("#quickQrRef")?.value || "").trim();
+  const desc = String($("#quickQrDescription")?.value || "").trim();
+  const loc = String($("#quickQrLocation")?.value || "").trim();
+  const unit = String($("#quickQrUnit")?.value || "").trim();
+  const main = kind === "location" ? loc : ref;
+  if(!main) return null;
+  return {
+    kind,
+    label:main,
+    value:main,
+    ref:kind === "material" ? ref : "",
+    location:loc,
+    description:desc || (kind === "location" ? "Ubicación física" : "Referencia manual"),
+    unit,
+    data:inventoryPayload(kind, main, { ref, location:loc, description:desc, unit }),
+    code:inventoryCode(kind, main),
+    sub:desc || (kind === "location" ? "Ubicación física" : "Referencia manual")
+  };
+}
+function saveLabelQueue(){
+  localStorage.setItem("inventarioLabelQueueV31", JSON.stringify((state.labelQueue || []).slice(-300)));
+}
+async function persistGeneratedLabel(item){
+  if(!state.user || navigator.onLine === false || !item?.code) return;
+  try{
+    await setDoc(doc(db, "generatedLabels", safeId(item.code)), {
+      kind:item.kind || "material",
+      code:item.code || "",
+      label:item.label || "",
+      ref:item.ref || "",
+      location:item.location || "",
+      description:item.description || item.sub || "",
+      unit:item.unit || "",
+      payload:item.data || "",
+      createdAt:item.createdAt || nowTS(),
+      updatedAt:nowTS(),
+      createdByUid:state.user.uid,
+      createdByEmail:state.user.email,
+      source:"v31_codificacion_en_conteo"
+    }, { merge:true });
+  }catch(err){ console.warn("No se pudo registrar etiqueta generada en Firestore", err); }
+}
+function addLabelToQueue(item){
+  if(!item || !String(item.label || item.value || "").trim()) return toast("No hay datos suficientes para crear la etiqueta.", "error");
+  state.labelQueue ||= [];
+  const key = `${item.kind}|${item.code}`;
+  state.labelQueue = state.labelQueue.filter(x => `${x.kind}|${x.code}` !== key);
+  state.labelQueue.unshift({ ...item, createdAt:new Date().toISOString(), createdBy:state.user?.email || "" });
+  state.labelQueue = state.labelQueue.slice(0, 80);
+  saveLabelQueue();
+  persistGeneratedLabel(item);
+  renderLabelQueue();
+  renderQuickLabelDraft();
+}
+function createQuickLabelFromForm(){
+  const item = buildManualLabelItem();
+  if(!item) return toast("Escribe al menos una referencia o ubicación para crear la etiqueta.", "error");
+  addLabelToQueue(item);
+  toast("Etiqueta agregada a la cola de impresión.");
+}
+function clearLabelQueue(){
+  state.labelQueue = [];
+  saveLabelQueue();
+  renderLabelQueue();
+  toast("Cola de etiquetas limpiada.");
+}
+function renderQuickLabelDraft(){
+  const el = $("#quickLabelDraft");
+  if(!el) return;
+  const item = buildManualLabelItem();
+  el.innerHTML = item ? qrLabelHtml(item) : `<div class="empty small">Escribe una referencia o ubicación para generar una etiqueta inmediata.</div>`;
+}
+function renderLabelQueue(){
+  const el = $("#quickLabelQueue");
+  if(!el) return;
+  const rows = state.labelQueue || [];
+  if(!rows.length){ el.innerHTML = `<div class="empty small">Sin etiquetas en cola. Puedes agregarlas desde Conteo Express o desde el formulario manual.</div>`; return; }
+  el.innerHTML = `<div class="queue-list">${rows.slice(0,40).map((x,i) => `<div class="queue-row"><span><b>${esc(x.code || "")}</b><small>${esc(x.label || "")} · ${esc(x.description || "")}</small></span><button type="button" class="tiny" data-print-queue-index="${i}">Imprimir</button></div>`).join("")}</div>`;
+  $$('[data-print-queue-index]').forEach(btn => btn.addEventListener("click", () => {
+    const item = state.labelQueue[Number(btn.dataset.printQueueIndex)];
+    if(item) printLabelItems([item], $("#qrLabelSize")?.value || "standard");
+  }));
+}
 function renderQrLabels(){
   const el = $("#qrLabelPreview");
   if(!el) return;
@@ -1091,29 +1259,79 @@ function renderQrLabels(){
   let items = [];
   if(type === "location"){
     const locs = [...new Set(state.materials.map(m => String(m.location || "").trim()).filter(Boolean))].sort();
-    items = locs.filter(l => !q || norm(l).includes(q)).slice(0,max).map(l => ({ label:l, data:`LOC:${l}`, sub:"Ubicación física", kind:"location" }));
+    items = locs.filter(l => !q || norm(l).includes(q) || norm(inventoryCode("location", l)).includes(q)).slice(0,max).map(labelItemFromLocation);
   }else{
     items = state.materials
-      .map(m => ({ ...m, ...displayMeta({ materialRef:m.ref, ...m }) }))
-      .filter(m => !q || [m.ref,m.description,m.location,m.line].some(v => norm(v).includes(q)))
-      .slice(0,max)
-      .map(m => ({ label:m.ref, data:`MAT:${m.ref}`, sub:m.description || m.location || "Referencia", location:m.location || "", unit:m.unit || "", kind:"material" }));
+      .map(labelItemFromMaterial)
+      .filter(m => !q || [m.ref,m.description,m.location,m.code].some(v => norm(v).includes(q)))
+      .slice(0,max);
   }
   el.innerHTML = items.length ? items.map(qrLabelHtml).join("") : `<div class="empty small">No hay etiquetas para mostrar.</div>`;
 }
+function qrUrl(item, size=140){
+  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(item.data || item.code || item.label || "")}`;
+}
+function barcodeUrl(item){
+  return `https://bwipjs-api.metafloor.com/?bcid=code128&scale=2&height=9&includetext&text=${encodeURIComponent(item.code || item.label || "")}`;
+}
 function qrLabelHtml(item){
-  const data = encodeURIComponent(item.data);
-  const img = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${data}`;
-  return `<div class="qr-label" data-qr="${esc(item.data)}"><img alt="QR ${esc(item.label)}" src="${img}"><b>${esc(item.label)}</b><span>${esc(item.sub || "")}</span>${item.location ? `<em>${esc(item.location)}</em>` : ""}<small>${esc(item.data)}</small></div>`;
+  return `<div class="qr-label v31-label" data-qr="${esc(item.data || "")}" data-code="${esc(item.code || "")}">
+    <div class="label-kind">${item.kind === "location" ? "UBICACIÓN" : "REFERENCIA"}</div>
+    <img class="qr-img" alt="QR ${esc(item.label)}" src="${qrUrl(item)}">
+    <img class="barcode-img" alt="Código de barras ${esc(item.code)}" src="${barcodeUrl(item)}">
+    <b>${esc(item.label || "")}</b>
+    <span>${esc(item.sub || item.description || "")}</span>
+    ${item.location && item.kind !== "location" ? `<em>${esc(item.location)}</em>` : ""}
+    ${item.unit ? `<em>Unidad: ${esc(item.unit)}</em>` : ""}
+    <small>${esc(item.code || "")}</small>
+  </div>`;
 }
 function printQrLabels(){
-  const html = $("#qrLabelPreview")?.innerHTML || "";
-  const size = $("#qrLabelSize")?.value || "standard";
+  const type = $("#qrType")?.value || "material";
+  const q = norm($("#qrSearch")?.value || "");
+  const max = Math.max(1, Math.min(200, Number($("#qrLimit")?.value || 48)));
+  let items;
+  if(type === "location"){
+    items = [...new Set(state.materials.map(m => String(m.location || "").trim()).filter(Boolean))].sort().filter(l => !q || norm(l).includes(q) || norm(inventoryCode("location", l)).includes(q)).slice(0,max).map(labelItemFromLocation);
+  }else{
+    items = state.materials.map(labelItemFromMaterial).filter(m => !q || [m.ref,m.description,m.location,m.code].some(v => norm(v).includes(q))).slice(0,max);
+  }
+  printLabelItems(items, $("#qrLabelSize")?.value || "standard");
+}
+function printLabelQueue(){
+  const rows = state.labelQueue || [];
+  if(!rows.length) return toast("No hay etiquetas en cola para imprimir.", "error");
+  printLabelItems(rows, $("#qrLabelSize")?.value || "standard");
+}
+function printLabelItems(items, size="standard"){
+  if(!items?.length) return toast("No hay etiquetas para imprimir.", "error");
   const columns = size === "large" ? 3 : size === "compact" ? 5 : 4;
+  const html = items.map(qrLabelHtml).join("");
   const w = window.open("", "_blank");
   if(!w) return toast("El navegador bloqueó la ventana de impresión.", "error");
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas QR</title><style>body{font-family:Century Gothic,Arial;margin:14px;color:#0b2d5c}.qr-label-grid{display:grid;grid-template-columns:repeat(${columns},1fr);gap:8px}.qr-label{border:1px solid #8ea7c4;border-radius:12px;padding:8px;text-align:center;page-break-inside:avoid;min-height:${size === "large" ? "205px" : "155px"}}.qr-label img{width:${size === "compact" ? "78px" : "105px"};height:${size === "compact" ? "78px" : "105px"}}.qr-label b{display:block;font-size:${size === "compact" ? "11px" : "14px"};margin-top:4px;word-break:break-word}.qr-label span{display:block;font-size:${size === "compact" ? "8px" : "10px"};line-height:1.15}.qr-label em{display:block;font-style:normal;font-size:9px;color:#345;line-height:1.15}.qr-label small{display:block;font-size:7px;color:#64758d;margin-top:3px;word-break:break-all}@page{size:letter;margin:10mm}@media print{body{margin:0}.qr-label{border-color:#555}}</style></head><body><div class="qr-label-grid">${html}</div><script>setTimeout(()=>print(),500)<\/script></body></html>`);
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas inventario EI</title><style>body{font-family:Century Gothic,Arial;margin:14px;color:#0b2d5c}.qr-label-grid{display:grid;grid-template-columns:repeat(${columns},1fr);gap:8px}.qr-label{border:1px solid #667085;border-radius:12px;padding:8px;text-align:center;page-break-inside:avoid;min-height:${size === "large" ? "245px" : "185px"};display:grid;justify-items:center;gap:4px}.label-kind{font-size:8px;font-weight:900;letter-spacing:.08em;color:#667085}.qr-img{width:${size === "compact" ? "72px" : size === "large" ? "122px" : "96px"};height:${size === "compact" ? "72px" : size === "large" ? "122px" : "96px"};object-fit:contain}.barcode-img{width:96%;height:${size === "compact" ? "30px" : "38px"};object-fit:contain}.qr-label b{display:block;font-size:${size === "compact" ? "10px" : "14px"};margin-top:2px;word-break:break-word}.qr-label span{display:block;font-size:${size === "compact" ? "8px" : "10px"};line-height:1.15}.qr-label em{display:block;font-style:normal;font-size:9px;color:#345;line-height:1.15}.qr-label small{display:block;font-size:8px;color:#111;margin-top:2px;word-break:break-all;font-weight:900}@page{size:letter;margin:10mm}@media print{body{margin:0}.qr-label{border-color:#333}}</style></head><body><div class="qr-label-grid">${html}</div><script>setTimeout(()=>print(),700)<\/script></body></html>`);
   w.document.close();
+}
+function taskLabelItem(task, kind="material"){
+  const meta = displayMeta(task);
+  if(kind === "location") return meta.location ? labelItemFromLocation(meta.location || task.location || "") : null;
+  if(!meta.ref) return null;
+  return { kind:"material", label:meta.ref, value:meta.ref, ref:meta.ref, location:meta.location || "", description:meta.description || "Referencia", unit:meta.unit || "", data:inventoryPayload("material", meta.ref, meta), code:inventoryCode("material", meta.ref), sub:meta.description || meta.location || "Referencia" };
+}
+function addTaskLabelToQueue(taskId, kind="material"){
+  const task = state.tasks.find(t => t.id === taskId);
+  if(!task) return;
+  const item = taskLabelItem(task, kind);
+  if(!item?.label) return toast("Esta tarea no tiene datos suficientes para crear etiqueta.", "error");
+  addLabelToQueue(item);
+  toast(kind === "location" ? "Etiqueta de ubicación agregada." : "Etiqueta de referencia agregada.");
+}
+function printTaskLabel(taskId, kind="material"){
+  const task = state.tasks.find(t => t.id === taskId);
+  if(!task) return;
+  const item = taskLabelItem(task, kind);
+  if(!item?.label) return toast("Esta tarea no tiene datos suficientes para imprimir etiqueta.", "error");
+  printLabelItems([item], "large");
 }
 function saveOfflineQueue(){
   localStorage.setItem("inventarioOfflineCountQueue", JSON.stringify(state.offlineQueue || []));
@@ -1248,6 +1466,8 @@ function renderAll(){
   renderSettings();
   renderLineCatalog();
   renderQrLabels();
+  renderQuickLabelDraft();
+  renderLabelQueue();
   renderIndicators();
   renderDriveConfig();
   if(isSuper()) renderUsers();
@@ -2455,6 +2675,16 @@ async function generateCableTasks(showToast = true){
 }
 
 
+function renderCountCodePanel(item){
+  const el = $("#countCodePanel");
+  if(!el) return;
+  const meta = displayMeta(item || {});
+  const refCode = inventoryCode("material", meta.ref || item?.materialRef || "");
+  const locCode = meta.location ? inventoryCode("location", meta.location) : "Sin ubicación";
+  el.innerHTML = `<div class="count-code-box"><div><span>Codificación sugerida</span><b>${esc(refCode)}</b><small>${esc(meta.description || "")}</small></div><div><span>Ubicación</span><b>${esc(locCode)}</b><small>${esc(meta.location || "Sin ubicación")}</small></div><div class="count-code-actions"><button type="button" class="tiny blue" data-count-label-kind="material">Crear etiqueta ref</button><button type="button" class="tiny" data-count-label-kind="location">Crear etiqueta ubicación</button><button type="button" class="tiny warn" data-count-print-kind="material">Imprimir ref</button></div></div>`;
+  $$('[data-count-label-kind]').forEach(btn => btn.addEventListener("click", () => addLabelToQueue(taskLabelItem(item, btn.dataset.countLabelKind || "material"))));
+  $$('[data-count-print-kind]').forEach(btn => btn.addEventListener("click", () => printLabelItems([taskLabelItem(item, btn.dataset.countPrintKind || "material")], "large")));
+}
 function openTaskCountDialog(taskId){
   const rawTask = state.tasks.find(t => t.id === taskId);
   if(!rawTask) return;
@@ -2479,6 +2709,7 @@ function openTaskCountDialog(taskId){
   $("#systemQtyLabel").childNodes[0].textContent = cable ? "Metros sistema" : "Stock sistema";
   $("#countQtyLabel").childNodes[0].textContent = cable ? "Metros físicos contados" : "Cantidad física contada";
   $("#countDialogSubtitle").textContent = `${meta.ref} · ${meta.description || "Referencia sin nombre"} · ${meta.location || "Sin ubicación"}`;
+  renderCountCodePanel(task);
   updateCountPreview();
   $("#countDialog").showModal();
 }
@@ -2503,6 +2734,7 @@ function openCaseCountDialog(caseId, mode){
   $("#systemQtyLabel").childNodes[0].textContent = "Stock sistema";
   $("#countQtyLabel").childNodes[0].textContent = "Cantidad física";
   $("#countDialogSubtitle").textContent = `${c.materialRef} · ${c.description || ""}`;
+  renderCountCodePanel(c);
   updateCountPreview();
   $("#countDialog").showModal();
 }

@@ -1,3 +1,20 @@
+# Inventario Cíclico SIESA — V31 codificación durante conteo
+
+Esta versión agrega codificación física durante el conteo: QR + código de barras Code128 + código interno simple EI-REF / EI-UBI.
+
+## Novedades V31
+
+- Crear códigos mientras se realiza Conteo Express.
+- Botones de etiqueta por referencia y ubicación desde la tarea actual.
+- Panel manual para crear códigos de referencias o ubicaciones no codificadas.
+- Cola local de etiquetas para imprimir en lote.
+- Registro opcional en Firestore `generatedLabels`.
+- QR estructurado: `EI|MAT|...` y `EI|LOC|...`.
+- Código de barras Code128 generado para impresión.
+- Compatibilidad con códigos anteriores `MAT:` / `REF:` / `LOC:`.
+
+---
+
 ## V30 operativo-gerencial
 
 Esta versión agrega Conteo Express enriquecido con nombre real de referencia, etiquetas QR imprimibles, cola offline avanzada, mapa de calor, ranking de causas, tiempos por conteo, PDF automático por caso, alertas inteligentes y tablero ejecutivo gerencial.
