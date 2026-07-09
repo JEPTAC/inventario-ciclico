@@ -238,17 +238,17 @@
         <div class="grid two">
           <article class="card">
             <div class="card-head">
-              <div><h3>Generador de etiquetas y códigos</h3><p>Crea QR + código de barras interno para referencia, ubicación, estante o material nuevo durante el conteo.</p></div>
+              <div><h3>Generador de etiquetas y códigos</h3><p>Prepara e imprime stickers de 16 por hoja para pegar mientras se cuenta. Cada etiqueta deja espacio para escribir el stock físico con marcador.</p></div>
               <button id="printQrLabelsBtn" class="btn primary" type="button">Imprimir selección</button>
             </div>
             <div class="config-grid">
               <label>Buscar material<input id="qrSearch" placeholder="Referencia, descripción o ubicación"></label>
               <label>Tipo de etiqueta<select id="qrType"><option value="material">Referencia</option><option value="location">Ubicación</option></select></label>
-              <label>Tamaño<select id="qrLabelSize"><option value="standard">Estándar 4 columnas</option><option value="large">Grande bodega</option><option value="compact">Compacta</option></select></label>
-              <label>Cantidad máxima<input id="qrLimit" type="number" min="1" max="200" value="48"></label>
+              <label>Formato<select id="qrLabelSize"><option value="sheet16">Hoja carta · 16 stickers</option></select></label>
+              <label>Cantidad a preparar<input id="qrLimit" type="number" min="1" max="160" value="16"></label>
             </div>
             <div class="quick-code-panel">
-              <div class="card-head compact"><div><h4>Crear código en el momento</h4><p>Útil cuando en bodega aparece un material o ubicación sin etiqueta. El código interno queda simple: EI-REF-... o EI-UBI-...</p></div><span class="tag blue">V31</span></div>
+              <div class="card-head compact"><div><h4>Crear código en el momento</h4><p>Útil cuando en bodega aparece un material o ubicación sin etiqueta. El código interno queda simple, legible y trazable: EI-REF-... o EI-UBI-...</p></div><span class="tag blue">V32</span></div>
               <div class="config-grid">
                 <label>Clase<select id="quickQrKind"><option value="material">Referencia / material</option><option value="location">Ubicación / estante</option></select></label>
                 <label>Referencia<input id="quickQrRef" placeholder="Ej: 105041 / código SIESA"></label>

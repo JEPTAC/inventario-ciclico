@@ -53,6 +53,7 @@ const state = {
   cases: [],
   syncLogs: [],
   counts: [],
+  referenceMemory: [],
   cableSession: null,
   activeView: "dashboardView",
   autoTimer: null,
@@ -71,7 +72,7 @@ const state = {
     saveNextRequested: false
   },
   offlineQueue: JSON.parse(localStorage.getItem("inventarioOfflineCountQueue") || "[]"),
-  labelQueue: JSON.parse(localStorage.getItem("inventarioLabelQueueV31") || "[]")
+  labelQueue: JSON.parse(localStorage.getItem("inventarioLabelQueueV32") || localStorage.getItem("inventarioLabelQueueV31") || "[]")
 };
 
 function showBootError(message, err = null){
@@ -626,6 +627,33 @@ function taskLabel(item = {}){
   return `${meta.ref}${meta.description ? " · " + meta.description : ""}`;
 }
 
+function memoryByRef(ref){
+  const key = norm(ref);
+  return state.referenceMemory.find(m => norm(m.ref || m.materialRef) === key || norm(m.ref || m.materialRef).replace(/^0+/, "") === key.replace(/^0+/, "")) || null;
+}
+function mergeReferenceMemory(material, memory){
+  if(!memory) return material;
+  return {
+    ...material,
+    referenceCode: material.referenceCode || memory.referenceCode || inventoryCode("material", material.ref),
+    lastCountDate: material.lastCountDate || memory.lastCountDate || "",
+    lastVerifiedDate: material.lastVerifiedDate || memory.lastVerifiedDate || memory.lastCountDate || "",
+    lastCableCountDate: material.lastCableCountDate || memory.lastCableCountDate || "",
+    lastMeterCountDate: material.lastMeterCountDate || memory.lastMeterCountDate || "",
+    lastCountedQty: memory.lastCountedQty ?? material.lastCountedQty ?? null,
+    lastCountSystemQty: memory.lastSystemQty ?? material.lastCountSystemQty ?? null,
+    lastCountDiff: memory.lastDiff ?? material.lastCountDiff ?? null,
+    lastCountDiffValue: memory.lastDiffValue ?? material.lastCountDiffValue ?? null,
+    lastCountResult: memory.lastResult || material.lastCountResult || "",
+    lastCountSeverity: memory.lastSeverity || material.lastCountSeverity || "",
+    lastCountCause: memory.lastCause || material.lastCountCause || "",
+    lastCountedBy: memory.lastCountedBy || material.lastCountedBy || "",
+    lastCountDurationSeconds: memory.lastDurationSeconds ?? material.lastCountDurationSeconds ?? 0,
+    memoryUpdatedAt: memory.updatedAt || material.memoryUpdatedAt || "",
+    memorySource: memory.source || material.memorySource || "referenceMemory"
+  };
+}
+
 async function refreshAll(){
   state.initWarnings = [];
   await safeLoad("materials", loadMaterials);
@@ -647,8 +675,18 @@ async function refreshAll(){
 }
 
 async function loadMaterials(){
-  const snap = await getDocs(query(collection(db, "materials"), limit(6000)));
-  state.materials = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+  const snap = await getDocs(query(collection(db, "materials"), limit(7000)));
+  const materials = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+  try{
+    const memSnap = await getDocs(query(collection(db, "referenceMemory"), limit(8000)));
+    state.referenceMemory = memSnap.docs.map(d => ({ id:d.id, ...d.data() }));
+    const memMap = new Map(state.referenceMemory.map(m => [norm(m.ref || m.materialRef), m]));
+    state.materials = materials.map(m => mergeReferenceMemory(m, memMap.get(norm(m.ref))));
+  }catch(err){
+    console.warn("No se pudo leer referenceMemory. La app continuará solo con materials.", err);
+    state.referenceMemory = [];
+    state.materials = materials;
+  }
 }
 async function loadTasks(){
   const snap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned", "recount_required", "pending_inventory", "pending_jefe_approval", "pending_jefe_logistico"]), limit(900)));
@@ -921,6 +959,11 @@ function expressTaskDetail(t){
   const risk = t.risk || taskRiskMeta(t);
   const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje" || meta.isCable;
   const value = Number(meta.inventoryValue || Number(meta.systemQty || 0) * Number(meta.unitCost || 0));
+  const mem = memoryByRef(meta.ref) || meta;
+  const hasMem = Boolean(mem?.lastCountDate);
+  const memHtml = hasMem
+    ? `<div class="memory-box"><span>Última contabilización guardada</span><b>${esc(mem.lastCountDate || "")} · ${esc(mem.lastResult || meta.lastCountResult || "")}</b><small>Físico: ${fmt(mem.lastCountedQty ?? meta.lastCountedQty ?? 0)} · Sistema: ${fmt(mem.lastSystemQty ?? meta.lastCountSystemQty ?? 0)} · Dif: ${fmt(mem.lastDiff ?? meta.lastCountDiff ?? 0)} · ${esc(mem.lastCountedBy || meta.lastCountedBy || "sin usuario")}</small></div>`
+    : `<div class="memory-box"><span>Memoria de referencia</span><b>Sin conteo histórico registrado</b><small>Cuando se guarde el primer conteo, esta referencia quedará memorizada aunque cambie el Excel SIESA.</small></div>`;
   return `<div class="express-current-card">
     <div class="express-current-top"><span class="pill ${risk.cls}">Riesgo ${risk.label} · ${risk.score}</span>${statusPill(t.status)}</div>
     <div class="express-ref-title">
@@ -936,13 +979,13 @@ function expressTaskDetail(t){
       <div><span>Valor inventario</span><b>${money(value)}</b></div>
       <div><span>Motivo riesgo</span><b>${esc(risk.reasons)}</b></div>
     </div>
-    <div class="express-code-strip"><span>Código interno sugerido</span><b>${esc(inventoryCode("material", meta.ref || ""))}</b><small>QR exacto: MAT:${esc(meta.ref || "")}</small></div>
+    ${memHtml}
+    <div class="express-code-strip"><span>Código interno sugerido</span><b>${esc(inventoryCode("material", meta.ref || ""))}</b><small>Formato simple: QR + Code128 + texto visible para digitar si falla la cámara.</small></div>
     <div class="button-row express-main-actions">
       <button class="btn primary big-action" type="button" data-express-count="${esc(t.id)}">Contar ahora</button>
-      <button class="btn secondary" type="button" data-copy-ref="${esc(meta.ref || "")}">Copiar ref</button>
-      <button class="btn blue" type="button" data-label-task="${esc(t.id)}" data-label-kind="material">Etiqueta ref</button>
-      <button class="btn secondary" type="button" data-label-task="${esc(t.id)}" data-label-kind="location">Etiqueta ubicación</button>
-      <button class="btn warn" type="button" data-print-label-task="${esc(t.id)}" data-label-kind="material">Imprimir ref</button>
+      <button class="btn blue" type="button" data-label-task="${esc(t.id)}" data-label-kind="material">Agregar sticker ref</button>
+      <button class="btn secondary" type="button" data-label-task="${esc(t.id)}" data-label-kind="location">Agregar sticker ubicación</button>
+      <button class="btn warn" type="button" data-print-label-task="${esc(t.id)}" data-label-kind="material">Imprimir sticker</button>
     </div>
   </div>`;
 }
@@ -1184,7 +1227,7 @@ function buildManualLabelItem(){
   };
 }
 function saveLabelQueue(){
-  localStorage.setItem("inventarioLabelQueueV31", JSON.stringify((state.labelQueue || []).slice(-300)));
+  localStorage.setItem("inventarioLabelQueueV32", JSON.stringify((state.labelQueue || []).slice(-320)));
 }
 async function persistGeneratedLabel(item){
   if(!state.user || navigator.onLine === false || !item?.code) return;
@@ -1202,7 +1245,7 @@ async function persistGeneratedLabel(item){
       updatedAt:nowTS(),
       createdByUid:state.user.uid,
       createdByEmail:state.user.email,
-      source:"v31_codificacion_en_conteo"
+      source:"v32_codificacion_memoria"
     }, { merge:true });
   }catch(err){ console.warn("No se pudo registrar etiqueta generada en Firestore", err); }
 }
@@ -1275,15 +1318,19 @@ function barcodeUrl(item){
   return `https://bwipjs-api.metafloor.com/?bcid=code128&scale=2&height=9&includetext&text=${encodeURIComponent(item.code || item.label || "")}`;
 }
 function qrLabelHtml(item){
-  return `<div class="qr-label v31-label" data-qr="${esc(item.data || "")}" data-code="${esc(item.code || "")}">
+  return `<div class="qr-label v32-label" data-qr="${esc(item.data || "")}" data-code="${esc(item.code || "")}">
     <div class="label-kind">${item.kind === "location" ? "UBICACIÓN" : "REFERENCIA"}</div>
-    <img class="qr-img" alt="QR ${esc(item.label)}" src="${qrUrl(item)}">
-    <img class="barcode-img" alt="Código de barras ${esc(item.code)}" src="${barcodeUrl(item)}">
+    <div class="label-code-top">${esc(item.code || "")}</div>
+    <div class="label-media">
+      <img class="qr-img" alt="QR ${esc(item.label)}" src="${qrUrl(item)}">
+      <img class="barcode-img" alt="Código de barras ${esc(item.code)}" src="${barcodeUrl(item)}">
+    </div>
     <b>${esc(item.label || "")}</b>
     <span>${esc(item.sub || item.description || "")}</span>
     ${item.location && item.kind !== "location" ? `<em>${esc(item.location)}</em>` : ""}
     ${item.unit ? `<em>Unidad: ${esc(item.unit)}</em>` : ""}
-    <small>${esc(item.code || "")}</small>
+    <div class="stock-marker"><strong>STOCK FÍSICO</strong><i></i></div>
+    <small>Texto manual: ${esc(item.kind === "location" ? item.location || item.label || "" : item.ref || item.label || "")}</small>
   </div>`;
 }
 function printQrLabels(){
@@ -1303,13 +1350,34 @@ function printLabelQueue(){
   if(!rows.length) return toast("No hay etiquetas en cola para imprimir.", "error");
   printLabelItems(rows, $("#qrLabelSize")?.value || "standard");
 }
-function printLabelItems(items, size="standard"){
+function printLabelItems(items, size="sheet16"){
   if(!items?.length) return toast("No hay etiquetas para imprimir.", "error");
-  const columns = size === "large" ? 3 : size === "compact" ? 5 : 4;
-  const html = items.map(qrLabelHtml).join("");
+  const normalized = items.map(x => ({ ...x, code:x.code || inventoryCode(x.kind || "material", x.label || x.ref || x.location || "") }));
+  const html = normalized.map(qrLabelHtml).join("");
   const w = window.open("", "_blank");
   if(!w) return toast("El navegador bloqueó la ventana de impresión.", "error");
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas inventario EI</title><style>body{font-family:Century Gothic,Arial;margin:14px;color:#0b2d5c}.qr-label-grid{display:grid;grid-template-columns:repeat(${columns},1fr);gap:8px}.qr-label{border:1px solid #667085;border-radius:12px;padding:8px;text-align:center;page-break-inside:avoid;min-height:${size === "large" ? "245px" : "185px"};display:grid;justify-items:center;gap:4px}.label-kind{font-size:8px;font-weight:900;letter-spacing:.08em;color:#667085}.qr-img{width:${size === "compact" ? "72px" : size === "large" ? "122px" : "96px"};height:${size === "compact" ? "72px" : size === "large" ? "122px" : "96px"};object-fit:contain}.barcode-img{width:96%;height:${size === "compact" ? "30px" : "38px"};object-fit:contain}.qr-label b{display:block;font-size:${size === "compact" ? "10px" : "14px"};margin-top:2px;word-break:break-word}.qr-label span{display:block;font-size:${size === "compact" ? "8px" : "10px"};line-height:1.15}.qr-label em{display:block;font-style:normal;font-size:9px;color:#345;line-height:1.15}.qr-label small{display:block;font-size:8px;color:#111;margin-top:2px;word-break:break-all;font-weight:900}@page{size:letter;margin:10mm}@media print{body{margin:0}.qr-label{border-color:#333}}</style></head><body><div class="qr-label-grid">${html}</div><script>setTimeout(()=>print(),700)<\/script></body></html>`);
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas inventario EI · 16 por hoja</title><style>
+    *{box-sizing:border-box}
+    body{font-family:"Century Gothic",Arial,sans-serif;margin:0;color:#0b2d5c;background:#fff}
+    .print-note{font-size:10px;color:#475467;margin:0 0 5mm 0;font-weight:700}
+    .qr-label-grid{display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:62mm;gap:3mm;width:190mm;margin:0 auto;break-after:auto}
+    .qr-label{border:1px solid #1f2937;border-radius:5mm;padding:3mm;text-align:center;page-break-inside:avoid;break-inside:avoid;display:grid;grid-template-rows:auto auto 1fr auto auto auto auto;justify-items:center;align-items:center;gap:1.1mm;min-width:0;overflow:hidden;background:#fff}
+    .label-kind{font-size:7.5px;font-weight:900;letter-spacing:.08em;color:#344054;border:1px solid #98a2b3;border-radius:99px;padding:1mm 2mm;line-height:1}
+    .label-code-top{font-size:8.5px;font-weight:900;color:#0b2d5c;word-break:break-all;line-height:1.05;max-width:100%}
+    .label-media{display:grid;grid-template-columns:21mm 1fr;gap:1.5mm;align-items:center;width:100%;min-height:20mm}
+    .qr-img{width:21mm;height:21mm;object-fit:contain}
+    .barcode-img{width:100%;height:12mm;object-fit:contain}
+    .qr-label b{font-size:10.5px;line-height:1.05;color:#0b2d5c;word-break:break-word;max-width:100%}
+    .qr-label span{font-size:7.5px;line-height:1.1;color:#344054;max-height:9mm;overflow:hidden}
+    .qr-label em{font-style:normal;font-size:7px;line-height:1.05;color:#475467;max-height:7mm;overflow:hidden}
+    .stock-marker{width:100%;display:grid;grid-template-columns:auto 1fr;gap:2mm;align-items:center;border:1px dashed #111827;border-radius:2mm;padding:1.4mm 1.6mm;margin-top:.5mm;min-height:8mm;background:#fff}
+    .stock-marker strong{font-size:7px;color:#111827;white-space:nowrap}.stock-marker i{display:block;border-bottom:2px solid #111827;height:4mm;width:100%}
+    .qr-label small{font-size:6.5px;line-height:1;color:#111827;word-break:break-word;font-weight:800;max-width:100%}
+    .qr-label:nth-child(16n){break-after:page}
+    @page{size:letter;margin:10mm}
+    @media screen{body{padding:12px}.qr-label-grid{box-shadow:0 0 0 1px #d0d5dd;padding:10mm}.print-note{width:190mm;margin:0 auto 8px}}
+    @media print{body{margin:0}.print-note{display:none}.qr-label-grid{box-shadow:none;padding:0}.qr-label{border-color:#111827}}
+  </style></head><body><p class="print-note">Formato hoja carta: 16 stickers por página. Cada sticker deja espacio para escribir stock físico con marcador.</p><div class="qr-label-grid">${html}</div><script>setTimeout(()=>print(),900)<\/script></body></html>`);
   w.document.close();
 }
 function taskLabelItem(task, kind="material"){
@@ -1331,7 +1399,63 @@ function printTaskLabel(taskId, kind="material"){
   if(!task) return;
   const item = taskLabelItem(task, kind);
   if(!item?.label) return toast("Esta tarea no tiene datos suficientes para imprimir etiqueta.", "error");
-  printLabelItems([item], "large");
+  printLabelItems([item], "sheet16");
+}
+function referenceMemoryDocId(ref){ return safeId(ref || "sin-referencia"); }
+function referenceMemoryFromCount(payload = {}){
+  const ref = payload.materialRef || payload.ref || "";
+  const date = payload.date || todayISO();
+  const countedQty = Number(payload.countedQty || 0);
+  const systemQty = Number(payload.systemQty || 0);
+  const diff = Number(payload.diff ?? (countedQty - systemQty));
+  const unitCost = Number(payload.unitCost || 0);
+  const diffValue = Number(payload.diffValue || Math.abs(diff) * unitCost || 0);
+  const taskType = payload.taskType || payload.type || "general";
+  return {
+    ref,
+    materialRef:ref,
+    referenceCode:inventoryCode("material", ref),
+    description:payload.description || "",
+    location:payload.location || "",
+    unit:payload.unit || "",
+    band:payload.band || "",
+    lastCountDate:date,
+    lastVerifiedDate:date,
+    lastSystemQty:systemQty,
+    lastCountedQty:countedQty,
+    lastDiff:diff,
+    lastAbsDiff:Math.abs(diff),
+    lastDiffPercent:Number(payload.diffPercent || 0),
+    lastDiffValue:diffValue,
+    lastSeverity:payload.severity || "",
+    lastResult:Math.abs(diff) > 0.0001 ? "Diferencia" : "Exacto",
+    lastCause:payload.cause || "N/A",
+    lastSupport:payload.support || "",
+    lastObs:payload.obs || "",
+    lastCountId:payload.countId || "",
+    lastTaskId:payload.taskId || "",
+    lastTaskType:taskType,
+    lastDurationSeconds:Number(payload.countDurationSeconds || 0),
+    lastCountedBy:payload.countedByEmail || state.user?.email || "",
+    lastCountedByUid:payload.countedByUid || state.user?.uid || "",
+    lastCountedByRole:payload.countedByRole || role(),
+    countTimes:Number(payload.previousCountTimes || 0) + 1,
+    [annualFieldName()]:true,
+    ...(taskType === "cable_metraje" ? { [meterFieldName()]:true, lastCableCountDate:date, lastMeterCountDate:date } : {}),
+    source:payload.source || "count_saved",
+    updatedAt:nowTS()
+  };
+}
+async function persistReferenceMemoryFromCount(payload = {}){
+  const ref = payload.materialRef || payload.ref || "";
+  if(!ref) return;
+  try{
+    const current = memoryByRef(ref) || {};
+    const data = referenceMemoryFromCount({ ...payload, previousCountTimes:Number(current.countTimes || 0) });
+    await setDoc(doc(db, "referenceMemory", referenceMemoryDocId(ref)), { ...current, ...data }, { merge:true });
+  }catch(err){
+    console.warn("No se pudo actualizar memoria de referencia", err);
+  }
 }
 function saveOfflineQueue(){
   localStorage.setItem("inventarioOfflineCountQueue", JSON.stringify(state.offlineQueue || []));
@@ -1409,6 +1533,7 @@ async function persistQueuedTaskCount(q){
     taskId:task.id || taskId, taskType:task.taskType || task.type || q.task?.taskType || "general",
     materialRef:q.materialRef, materialId:task.materialId || q.task?.materialId || safeId(q.materialRef), description:q.description || task.description || "", location:q.location || task.location || "", band:task.band || q.task?.band || "", date:q.date || todayISO(), systemQty:Number(q.systemQty || 0), countedQty:Number(q.countedQty || 0), diff:Number(q.diff || 0), absDiff:Number(q.absDiff || 0), unitCost:Number(q.unitCost || 0), diffPercent:Number(q.diffPercent || 0), diffValue:Number(q.diffValue || 0), severity:q.severity || "", recommendedAction:q.recommendedAction || "", result:hasDiff ? "Diferencia" : "Exacto", cause:q.cause || "N/A", support:q.support || "", obs:q.obs || "", countedByUid:q.countedByUid, countedByEmail:q.countedByEmail, countedByRole:q.countedByRole, countStartedAt:q.countStartedAt || "", countDurationSeconds:Number(q.countDurationSeconds || 0), offlineLocalId:q.localId, offlineCreatedAt:q.createdLocalAt || "", syncedFromOffline:true, createdAt:nowTS()
   });
+  await persistReferenceMemoryFromCount({ ...q, taskId:task.id || taskId, countId:countRef.id, taskType:task.taskType || task.type || q.task?.taskType || "general", source:"offline_task_count" });
   if(!task.id) return;
   if(!hasDiff){
     await updateDoc(doc(db, "countTasks", task.id), { status:"pending_jefe_approval", lastCountId:countRef.id, updatedAt:nowTS(), lastComment:isCable ? "Metraje exacto registrado offline y sincronizado." : "Conteo exacto registrado offline y sincronizado." });
@@ -1427,6 +1552,7 @@ async function persistQueuedCaseCount(q){
   const caseId = c.id || q.caseId;
   if(!caseId) return;
   const countRef = await addDoc(collection(db, "counts"), { caseId, taskType:q.mode === "auditoria" ? "conteo_auditoria" : "conteo_jefe_logistico", materialRef:q.materialRef, materialId:c.materialId || safeId(q.materialRef), description:q.description || c.description || "", location:q.location || c.location || "", date:q.date || todayISO(), systemQty:Number(q.systemQty || 0), countedQty:Number(q.countedQty || 0), diff:Number(q.diff || 0), absDiff:Number(q.absDiff || 0), unitCost:Number(q.unitCost || 0), diffPercent:Number(q.diffPercent || 0), diffValue:Number(q.diffValue || 0), severity:q.severity || "", recommendedAction:q.recommendedAction || "", result:Number(q.absDiff || 0) > 0.0001 ? "Diferencia" : "Exacto", cause:q.cause || "N/A", support:q.support || "", obs:q.obs || "", countedByUid:q.countedByUid, countedByEmail:q.countedByEmail, countedByRole:q.countedByRole, countStartedAt:q.countStartedAt || "", countDurationSeconds:Number(q.countDurationSeconds || 0), offlineLocalId:q.localId, syncedFromOffline:true, createdAt:nowTS() });
+  await persistReferenceMemoryFromCount({ ...q, caseId, countId:countRef.id, taskType:q.mode === "auditoria" ? "conteo_auditoria" : "conteo_jefe_logistico", source:"offline_case_count" });
   await updateDoc(doc(db, "cases", caseId), { lastCountId:countRef.id, lastSystemQty:Number(q.systemQty || 0), lastCountedQty:Number(q.countedQty || 0), diff:Number(q.diff || 0), diffPercent:Number(q.diffPercent || 0), diffValue:Number(q.diffValue || 0), severity:q.severity || "", lastComment:q.obs || "Conteo de caso sincronizado desde modo offline.", updatedAt:nowTS(), updatedByUid:q.countedByUid, updatedByEmail:q.countedByEmail, history:arrayUnion({ at:new Date().toISOString(), by:q.countedByEmail, role:q.countedByRole, action:q.mode === "auditoria" ? "conteo_auditoria_offline" : "conteo_jefe_offline", comment:q.obs || "Sincronizado desde offline." }) });
 }
 async function flushOfflineCountQueue(){
@@ -1848,6 +1974,7 @@ function renderIndicators(){
   const valueAccuracy = countedValueSample ? Math.max(0, Math.round((1 - diffValueTotal / countedValueSample) * 100)) : 0;
   const criticalDiffs = state.counts.filter(c => c.severity === "critica" || c.severity === "crítica").length;
   const avgDiffValue = totalCounts ? diffValueTotal / totalCounts : 0;
+  const reliability = reliabilityMetrics();
 
   cov.innerHTML = `
     <div class="summary-item"><span>Materiales activos</span><b>${fmt(total)}</b></div>
@@ -1871,6 +1998,9 @@ function renderIndicators(){
     <div class="summary-item"><span>Impacto total diferencias</span><b>${money(diffValueTotal)}</b></div>
     <div class="summary-item"><span>Impacto promedio por conteo</span><b>${money(avgDiffValue)}</b></div>
     <div class="summary-item"><span>Diferencias críticas</span><b>${fmt(criticalDiffs)}</b></div>
+    <div class="summary-item"><span>Confiabilidad operativa</span><b>${reliability.score}% · ${esc(reliability.level)}</b></div>
+    <div class="summary-item"><span>Memoria de referencias</span><b>${reliability.memoryCoverage}%</b></div>
+    <div class="summary-item"><span>Completitud de datos</span><b>${reliability.dataCompleteness}%</b></div>
     <div class="summary-item"><span>Casos abiertos</span><b>${fmt(state.cases.length)}</b></div>
     <div class="summary-item"><span>Jefe logístico pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("jefe")).length)}</b></div>
     <div class="summary-item"><span>Auditoría pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("auditoria")).length)}</b></div>
@@ -1902,6 +2032,26 @@ function totalDiffValue(rows){
 function avgCountDuration(counts = state.counts){
   const durations = counts.map(c => Number(c.countDurationSeconds || 0)).filter(v => v > 0);
   return durations.length ? durations.reduce((s,v)=>s+v,0) / durations.length : 0;
+}
+function reliabilityMetrics(){
+  const active = state.materials.filter(m => m.active !== false);
+  const totalCounts = state.counts.length;
+  const diffs = state.counts.filter(c => Number(c.absDiff || 0) > 0.0001);
+  const countAccuracy = totalCounts ? (totalCounts - diffs.length) / totalCounts * 100 : 0;
+  const diffValue = totalDiffValue(state.counts);
+  const countedValue = state.counts.reduce((s,c)=>s + Math.abs(Number(c.systemQty || 0) * Number(c.unitCost || 0)), 0);
+  const valueAccuracy = countedValue ? Math.max(0, (1 - diffValue / countedValue) * 100) : 0;
+  const dataCompleteness = active.length ? active.filter(m => m.ref && m.description && (m.location || m.catalogLine || m.category)).length / active.length * 100 : 0;
+  const memoryCoverage = active.length ? active.filter(m => m.lastCountDate || memoryByRef(m.ref)?.lastCountDate).length / active.length * 100 : 0;
+  const repeatedPenalty = Math.min(18, repeatedDifferenceRows(state.counts).reduce((s,r)=>s + Math.max(0, r.qty - 1), 0) * 3);
+  const openCasePenalty = Math.min(15, state.cases.length * 1.5);
+  const criticalPenalty = Math.min(15, state.counts.filter(c => ["critica","crítica"].includes(c.severity)).length * 3);
+  const score = Math.max(0, Math.min(100, Math.round(
+    countAccuracy * 0.34 + valueAccuracy * 0.34 + dataCompleteness * 0.12 + memoryCoverage * 0.12 + 8 - repeatedPenalty - openCasePenalty - criticalPenalty
+  )));
+  const level = score >= 95 ? "Alta" : score >= 85 ? "Buena" : score >= 70 ? "Media" : "Baja";
+  const cls = score >= 95 ? "green" : score >= 85 ? "blue" : score >= 70 ? "yellow" : "red";
+  return { score, level, cls, countAccuracy:Math.round(countAccuracy), valueAccuracy:Math.round(valueAccuracy), dataCompleteness:Math.round(dataCompleteness), memoryCoverage:Math.round(memoryCoverage), repeatedPenalty, openCasePenalty, criticalPenalty };
 }
 function intelligentAlertRows(){
   const alerts = [];
@@ -1940,6 +2090,7 @@ function renderExecutiveDashboard(){
   const pendingMgmt = state.cases.filter(c => c.status === "pending_gerencia");
   const criticalCases = state.cases.filter(c => c.severity === "critica" || c.severity === "crítica" || (Number(c.diffValue || 0) >= Number(state.settings.criticalDiffValue || 500000)));
   const avgMin = avgCountDuration() ? Math.round(avgCountDuration()/60) : 0;
+  const reliability = reliabilityMetrics();
   if(box){
     box.innerHTML = `
       <article class="executive-hero card">
@@ -1951,6 +2102,8 @@ function renderExecutiveDashboard(){
           <div><span>Pendientes gerencia</span><b>${fmt(pendingMgmt.length)}</b></div>
           <div><span>Críticos</span><b>${fmt(criticalCases.length)}</b></div>
           <div><span>Tiempo promedio</span><b>${avgMin ? fmt(avgMin) + " min" : "—"}</b></div>
+          <div><span>Confiabilidad</span><b>${reliability.score}% · ${esc(reliability.level)}</b></div>
+          <div><span>Memoria referencias</span><b>${reliability.memoryCoverage}%</b></div>
         </div>
       </article>`;
   }
@@ -2355,13 +2508,21 @@ function normalizeMaterial(row){
 async function processSiesaMaterials(incoming, file, rowsRead){
   const existingSnap = await getDocs(query(collection(db, "materials"), limit(7000)));
   const existingMap = new Map(existingSnap.docs.map(d => [d.data().ref, { id:d.id, ...d.data() }]));
+  let memoryMap = new Map();
+  try{
+    const memorySnap = await getDocs(query(collection(db, "referenceMemory"), limit(8000)));
+    memoryMap = new Map(memorySnap.docs.map(d => { const data = { id:d.id, ...d.data() }; return [data.ref || data.materialRef || d.id, data]; }));
+  }catch(err){
+    console.warn("No se pudo cargar referenceMemory durante sincronización SIESA", err);
+  }
   const firstSync = existingSnap.empty;
   const today = todayISO();
   const yearField = annualFieldName();
 
   const prepared = incoming.map(m => {
     const old = existingMap.get(m.ref);
-    const isNewAfterBase = !firstSync && !old;
+    const mem = memoryMap.get(m.ref) || memoryMap.get(safeId(m.ref)) || null;
+    const isNewAfterBase = !firstSync && !old && !mem;
     const change = old ? Number(m.stockSystem || 0) - Number(old.stockSystem || 0) : 0;
     const absChange = Math.abs(change);
     const movementType = !old ? "nuevo_siesa" : change > 0 ? "ingreso_operativo" : change < 0 ? "salida_operativa" : "sin_movimiento";
@@ -2377,10 +2538,19 @@ async function processSiesaMaterials(incoming, file, rowsRead){
       movementIndex,
       variabilityIndex,
       firstSeenDate: old?.firstSeenDate || today,
-      lastVerifiedDate: isNewAfterBase ? today : (old?.lastVerifiedDate || ""),
+      lastVerifiedDate: isNewAfterBase ? today : (old?.lastVerifiedDate || mem?.lastVerifiedDate || mem?.lastCountDate || ""),
       lastMovementDate: change !== 0 ? today : (old?.lastMovementDate || m.sourceLastMoveDate || ""),
-      lastCountDate: isNewAfterBase ? today : (old?.lastCountDate || ""),
-      [yearField]: isNewAfterBase ? true : (old?.[yearField] === true ? true : false),
+      lastCountDate: isNewAfterBase ? today : (old?.lastCountDate || mem?.lastCountDate || ""),
+      lastCountedQty: mem?.lastCountedQty ?? old?.lastCountedQty ?? null,
+      lastCountSystemQty: mem?.lastSystemQty ?? old?.lastCountSystemQty ?? null,
+      lastCountDiff: mem?.lastDiff ?? old?.lastCountDiff ?? null,
+      lastCountDiffValue: mem?.lastDiffValue ?? old?.lastCountDiffValue ?? null,
+      lastCountResult: mem?.lastResult || old?.lastCountResult || "",
+      lastCountSeverity: mem?.lastSeverity || old?.lastCountSeverity || "",
+      lastCountCause: mem?.lastCause || old?.lastCountCause || "",
+      lastCountedBy: mem?.lastCountedBy || old?.lastCountedBy || "",
+      referenceCode: mem?.referenceCode || old?.referenceCode || inventoryCode("material", m.ref),
+      [yearField]: isNewAfterBase ? true : (old?.[yearField] === true || mem?.[yearField] === true || (mem?.lastCountDate || "").startsWith(String(yearOf(today))) ? true : false),
       autoCountedReason: isNewAfterBase ? "nuevo_registro_siesa" : (old?.autoCountedReason || ""),
       sourceFileId: file.id,
       sourceFileName: file.name,
@@ -2488,6 +2658,15 @@ function compactMaterial(m){
     autoCountedReason:m.autoCountedReason || "",
     nextDueDate:"",
     isCable:Boolean(m.isCable),
+    referenceCode:m.referenceCode || inventoryCode("material", m.ref),
+    lastCountedQty:m.lastCountedQty ?? null,
+    lastCountSystemQty:m.lastCountSystemQty ?? null,
+    lastCountDiff:m.lastCountDiff ?? null,
+    lastCountDiffValue:m.lastCountDiffValue ?? null,
+    lastCountResult:m.lastCountResult || "",
+    lastCountSeverity:m.lastCountSeverity || "",
+    lastCountCause:m.lastCountCause || "",
+    lastCountedBy:m.lastCountedBy || "",
     lastCableCountDate:m.lastCableCountDate || "",
     lastMeterCountDate:m.lastMeterCountDate || "",
     [meterField]: m[meterField] === true,
@@ -2958,6 +3137,28 @@ async function saveCount(e){
       createdAt:nowTS()
     });
 
+    await persistReferenceMemoryFromCount({
+      taskId:task.id,
+      countId:countRef.id,
+      taskType:task.taskType || task.type || "general",
+      materialRef:task.materialRef,
+      description:task.description || "",
+      location:task.location || "",
+      unit:task.unit || "",
+      band:task.band || "",
+      date, systemQty, countedQty, diff,
+      unitCost:Number(task.unitCost || 0),
+      diffPercent:diffMeta.percent,
+      diffValue:diffMeta.value,
+      severity:diffMeta.severity,
+      cause, support, obs,
+      countDurationSeconds:countDurationSeconds(),
+      countedByUid:state.user.uid,
+      countedByEmail:state.user.email,
+      countedByRole:role(),
+      source:"task_count"
+    });
+
     if(!hasDiff){
       await updateDoc(doc(db, "countTasks", task.id), {
         status:"pending_jefe_approval",
@@ -3101,6 +3302,28 @@ async function saveCount(e){
       countStartedAt:$("#countStartedAt")?.value || "",
       countDurationSeconds:countDurationSeconds(),
       createdAt:nowTS()
+    });
+
+    await persistReferenceMemoryFromCount({
+      caseId:c.id,
+      countId:countRef.id,
+      taskType:mode === "auditoria" ? "conteo_auditoria" : "conteo_jefe_logistico",
+      materialRef:c.materialRef,
+      description:c.description || "",
+      location:c.location || "",
+      unit:c.unit || "",
+      band:c.band || "",
+      date, systemQty, countedQty, diff,
+      unitCost:Number(c.unitCost || 0),
+      diffPercent:diffMeta.percent,
+      diffValue:diffMeta.value,
+      severity:diffMeta.severity,
+      cause, support, obs,
+      countDurationSeconds:countDurationSeconds(),
+      countedByUid:state.user.uid,
+      countedByEmail:state.user.email,
+      countedByRole:role(),
+      source:"case_count"
     });
 
     await updateDoc(caseRef, {

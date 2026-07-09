@@ -1,7 +1,7 @@
 {
   "name": "Inventario Cíclico SIESA",
   "short_name": "Inventario SIESA",
-  "description": "Control de inventario cíclico, metraje de cables, evidencias fotográficas y aprobaciones.",
+  "description": "Control de inventario cíclico con Conteo Express, stickers imprimibles, memoria histórica, evidencias y aprobaciones.",
   "id": "./index.html",
   "start_url": "./index.html?source=pwa",
   "scope": "./",

@@ -1,3 +1,31 @@
+# Inventario Cíclico SIESA — V32 stickers, memoria y confiabilidad
+
+## Novedades V32
+
+- Etiquetas imprimibles en hoja carta con 16 stickers por página.
+- Cada sticker trae QR, código de barras, código interno visible y espacio para escribir el stock físico con marcador.
+- El módulo de etiquetas queda simplificado a un formato operativo real para bodega.
+- Memoria histórica `referenceMemory` para conservar la última contabilización de cada referencia aunque el Excel SIESA cambie.
+- Conteo Express muestra la última contabilización guardada cuando existe.
+- El guardado de conteos normales, de caso y sincronizados offline actualiza la memoria de referencia.
+- Indicador de confiabilidad operativa.
+- Tablero gerencial con confiabilidad y cobertura de memoria.
+- Service Worker actualizado a V32.
+
+## Archivos técnicos V32
+
+- `ANALISIS_COMPETENCIA_Y_MEJORAS_V32.md`
+- `QA_V32_STICKERS_MEMORIA_CONFIABILIDAD.md`
+
+## Despliegue
+
+1. Subir todos los archivos al repositorio.
+2. Publicar `firestore.rules` actualizado en Firebase.
+3. Abrir la APP y hacer Ctrl + F5 para limpiar caché.
+4. Probar impresión desde Etiquetas / Códigos con 16 stickers por hoja.
+
+---
+
 # Inventario Cíclico SIESA — V31 codificación durante conteo
 
 Esta versión agrega codificación física durante el conteo: QR + código de barras Code128 + código interno simple EI-REF / EI-UBI.
