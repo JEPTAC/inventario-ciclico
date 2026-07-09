@@ -1,4 +1,4 @@
-const CACHE_NAME = "inventario-siesa-v32-memoria-stickers";
+const CACHE_NAME = "inventario-siesa-v33-stickers-responsive";
 const APP_SHELL = [
   "./",
   "./index.html",

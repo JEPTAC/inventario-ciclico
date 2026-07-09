@@ -239,7 +239,10 @@
           <article class="card">
             <div class="card-head">
               <div><h3>Generador de etiquetas y códigos</h3><p>Prepara e imprime stickers de 16 por hoja para pegar mientras se cuenta. Cada etiqueta deja espacio para escribir el stock físico con marcador.</p></div>
-              <button id="printQrLabelsBtn" class="btn primary" type="button">Imprimir selección</button>
+              <div class="button-row compact-actions">
+                <button id="printQrLabelsBtn" class="btn primary" type="button">Imprimir 16 visibles</button>
+                <button id="printAllQrLabelsBtn" class="btn blue" type="button">Imprimir todos los stickers</button>
+              </div>
             </div>
             <div class="config-grid">
               <label>Buscar material<input id="qrSearch" placeholder="Referencia, descripción o ubicación"></label>
@@ -248,7 +251,7 @@
               <label>Cantidad a preparar<input id="qrLimit" type="number" min="1" max="160" value="16"></label>
             </div>
             <div class="quick-code-panel">
-              <div class="card-head compact"><div><h4>Crear código en el momento</h4><p>Útil cuando en bodega aparece un material o ubicación sin etiqueta. El código interno queda simple, legible y trazable: EI-REF-... o EI-UBI-...</p></div><span class="tag blue">V32</span></div>
+              <div class="card-head compact"><div><h4>Crear código en el momento</h4><p>Útil cuando en bodega aparece un material o ubicación sin etiqueta. El código interno queda simple, legible y trazable: EI-REF-... o EI-UBI-...</p></div><span class="tag blue">V33</span></div>
               <div class="config-grid">
                 <label>Clase<select id="quickQrKind"><option value="material">Referencia / material</option><option value="location">Ubicación / estante</option></select></label>
                 <label>Referencia<input id="quickQrRef" placeholder="Ej: 105041 / código SIESA"></label>

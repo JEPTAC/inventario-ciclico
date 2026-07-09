@@ -72,7 +72,7 @@ const state = {
     saveNextRequested: false
   },
   offlineQueue: JSON.parse(localStorage.getItem("inventarioOfflineCountQueue") || "[]"),
-  labelQueue: JSON.parse(localStorage.getItem("inventarioLabelQueueV32") || localStorage.getItem("inventarioLabelQueueV31") || "[]")
+  labelQueue: JSON.parse(localStorage.getItem("inventarioLabelQueueV33") || localStorage.getItem("inventarioLabelQueueV32") || localStorage.getItem("inventarioLabelQueueV31") || "[]")
 };
 
 function showBootError(message, err = null){
@@ -423,6 +423,7 @@ function groupBy(arr, fn){
 async function init(){
   try{
     registerPWAFeatures();
+    setupResponsiveMode();
     setupEvents();
     renderDriveConfig();
   }catch(err){
@@ -512,6 +513,7 @@ function setupEvents(){
   $("#printQuickLabelBtn")?.addEventListener("click", printLabelQueue);
   $("#clearLabelQueueBtn")?.addEventListener("click", clearLabelQueue);
   $("#printQrLabelsBtn")?.addEventListener("click", printQrLabels);
+  $("#printAllQrLabelsBtn")?.addEventListener("click", printAllQrLabels);
   $$('[data-qty-step]').forEach(btn => btn.addEventListener("click", () => bumpCountQty(Number(btn.dataset.qtyStep || 0))));
   $$('[data-qty-clear]').forEach(btn => btn.addEventListener("click", clearCountQty));
   window.addEventListener("online", () => { updateOfflineStatus(); flushOfflineCountQueue(); });
@@ -531,6 +533,27 @@ function setupEvents(){
   $("#enableAlertsBtn")?.addEventListener("click", enableAlerts);
   $("#copyrightBtn")?.addEventListener("click", () => $("#copyrightDialog").showModal());
   $("#closeCopyrightDialog")?.addEventListener("click", () => $("#copyrightDialog").close());
+}
+
+function setupResponsiveMode(){
+  applyResponsiveMode();
+  window.addEventListener("resize", applyResponsiveMode, { passive:true });
+  window.addEventListener("orientationchange", () => setTimeout(applyResponsiveMode, 150), { passive:true });
+}
+function applyResponsiveMode(){
+  const root = document.documentElement;
+  const width = window.innerWidth || document.documentElement.clientWidth || 0;
+  const height = window.innerHeight || document.documentElement.clientHeight || 0;
+  const dpr = window.devicePixelRatio || 1;
+  const compact = width <= 760 || height <= 760;
+  const ultraCompact = width <= 430 || height <= 620;
+  const lowResolution = compact || (dpr <= 1.1 && (width <= 960 || height <= 820));
+  root.classList.toggle("auto-compact", compact);
+  root.classList.toggle("auto-ultra-compact", ultraCompact);
+  root.classList.toggle("auto-low-res", lowResolution);
+  root.classList.toggle("auto-wide", width > 760 && height > 760);
+  root.style.setProperty("--vh", `${height * 0.01}px`);
+  root.dataset.viewportMode = ultraCompact ? "ultra" : compact ? "compact" : "wide";
 }
 
 function cleanFirebaseError(err){
@@ -1227,7 +1250,7 @@ function buildManualLabelItem(){
   };
 }
 function saveLabelQueue(){
-  localStorage.setItem("inventarioLabelQueueV32", JSON.stringify((state.labelQueue || []).slice(-320)));
+  localStorage.setItem("inventarioLabelQueueV33", JSON.stringify((state.labelQueue || []).slice(-320)));
 }
 async function persistGeneratedLabel(item){
   if(!state.user || navigator.onLine === false || !item?.code) return;
@@ -1245,7 +1268,7 @@ async function persistGeneratedLabel(item){
       updatedAt:nowTS(),
       createdByUid:state.user.uid,
       createdByEmail:state.user.email,
-      source:"v32_codificacion_memoria"
+      source:"v33_stickers_responsive_memoria"
     }, { merge:true });
   }catch(err){ console.warn("No se pudo registrar etiqueta generada en Firestore", err); }
 }
@@ -1333,51 +1356,79 @@ function qrLabelHtml(item){
     <small>Texto manual: ${esc(item.kind === "location" ? item.location || item.label || "" : item.ref || item.label || "")}</small>
   </div>`;
 }
-function printQrLabels(){
+function qrLabelItemsFromFilters({ all=false } = {}){
   const type = $("#qrType")?.value || "material";
   const q = norm($("#qrSearch")?.value || "");
-  const max = Math.max(1, Math.min(200, Number($("#qrLimit")?.value || 48)));
+  const visibleLimit = Math.max(1, Math.min(160, Number($("#qrLimit")?.value || 16)));
   let items;
   if(type === "location"){
-    items = [...new Set(state.materials.map(m => String(m.location || "").trim()).filter(Boolean))].sort().filter(l => !q || norm(l).includes(q) || norm(inventoryCode("location", l)).includes(q)).slice(0,max).map(labelItemFromLocation);
+    items = [...new Set(state.materials.map(m => String(m.location || "").trim()).filter(Boolean))]
+      .sort()
+      .filter(l => !q || norm(l).includes(q) || norm(inventoryCode("location", l)).includes(q))
+      .map(labelItemFromLocation);
   }else{
-    items = state.materials.map(labelItemFromMaterial).filter(m => !q || [m.ref,m.description,m.location,m.code].some(v => norm(v).includes(q))).slice(0,max);
+    items = state.materials
+      .map(labelItemFromMaterial)
+      .filter(m => !q || [m.ref,m.description,m.location,m.code].some(v => norm(v).includes(q)));
   }
-  printLabelItems(items, $("#qrLabelSize")?.value || "standard");
+  return all ? items : items.slice(0, visibleLimit);
+}
+function printQrLabels(){
+  const items = qrLabelItemsFromFilters({ all:false });
+  printLabelItems(items, $("#qrLabelSize")?.value || "sheet16", { title:"Etiquetas visibles" });
+}
+function printAllQrLabels(){
+  const items = qrLabelItemsFromFilters({ all:true });
+  if(!items.length) return toast("No hay stickers para imprimir con ese filtro.", "error");
+  printLabelItems(items, $("#qrLabelSize")?.value || "sheet16", { title:"Todos los stickers filtrados" });
 }
 function printLabelQueue(){
   const rows = state.labelQueue || [];
   if(!rows.length) return toast("No hay etiquetas en cola para imprimir.", "error");
-  printLabelItems(rows, $("#qrLabelSize")?.value || "standard");
+  printLabelItems(rows, $("#qrLabelSize")?.value || "sheet16", { title:"Cola de codificación" });
 }
-function printLabelItems(items, size="sheet16"){
+function chunkItems(arr, size=16){
+  const out = [];
+  for(let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+function printLabelItems(items, size="sheet16", options={}){
   if(!items?.length) return toast("No hay etiquetas para imprimir.", "error");
-  const normalized = items.map(x => ({ ...x, code:x.code || inventoryCode(x.kind || "material", x.label || x.ref || x.location || "") }));
-  const html = normalized.map(qrLabelHtml).join("");
+  const normalized = items
+    .filter(Boolean)
+    .map(x => ({ ...x, code:x.code || inventoryCode(x.kind || "material", x.label || x.ref || x.location || "") }));
+  const pages = chunkItems(normalized, 16).map(page => {
+    const fill = Array.from({ length:Math.max(0, 16 - page.length) }, () => `<div class="label-placeholder"></div>`).join("");
+    return `<section class="label-page">${page.map(qrLabelHtml).join("")}${fill}</section>`;
+  }).join("");
   const w = window.open("", "_blank");
   if(!w) return toast("El navegador bloqueó la ventana de impresión.", "error");
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas inventario EI · 16 por hoja</title><style>
+  const title = options.title || "Etiquetas inventario EI";
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)} · 16 por hoja</title><style>
     *{box-sizing:border-box}
-    body{font-family:"Century Gothic",Arial,sans-serif;margin:0;color:#0b2d5c;background:#fff}
-    .print-note{font-size:10px;color:#475467;margin:0 0 5mm 0;font-weight:700}
-    .qr-label-grid{display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:62mm;gap:3mm;width:190mm;margin:0 auto;break-after:auto}
-    .qr-label{border:1px solid #1f2937;border-radius:5mm;padding:3mm;text-align:center;page-break-inside:avoid;break-inside:avoid;display:grid;grid-template-rows:auto auto 1fr auto auto auto auto;justify-items:center;align-items:center;gap:1.1mm;min-width:0;overflow:hidden;background:#fff}
+    html,body{margin:0;color:#0b2d5c;background:#fff}
+    body{font-family:"Century Gothic",Arial,sans-serif}
+    .print-note{font-size:10px;color:#475467;margin:0 auto 4mm;width:190mm;font-weight:700}
+    .label-page{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,62mm);gap:3mm;width:190mm;margin:0 auto;break-after:page;page-break-after:always}
+    .label-page:last-child{break-after:auto;page-break-after:auto}
+    .qr-label,.label-placeholder{min-width:0;min-height:0}
+    .qr-label{border:1px solid #111827;border-radius:5mm;padding:3mm;text-align:center;page-break-inside:avoid;break-inside:avoid;display:grid;grid-template-rows:auto auto 1fr auto auto auto auto;justify-items:center;align-items:center;gap:1.1mm;overflow:hidden;background:#fff}
+    .label-placeholder{border:1px dashed transparent;border-radius:5mm}
     .label-kind{font-size:7.5px;font-weight:900;letter-spacing:.08em;color:#344054;border:1px solid #98a2b3;border-radius:99px;padding:1mm 2mm;line-height:1}
     .label-code-top{font-size:8.5px;font-weight:900;color:#0b2d5c;word-break:break-all;line-height:1.05;max-width:100%}
     .label-media{display:grid;grid-template-columns:21mm 1fr;gap:1.5mm;align-items:center;width:100%;min-height:20mm}
-    .qr-img{width:21mm;height:21mm;object-fit:contain}
-    .barcode-img{width:100%;height:12mm;object-fit:contain}
+    .qr-img{width:21mm;height:21mm;object-fit:contain;background:#fff;border-radius:2mm}
+    .barcode-img{width:100%;height:12mm;object-fit:contain;background:#fff;border-radius:1mm}
     .qr-label b{font-size:10.5px;line-height:1.05;color:#0b2d5c;word-break:break-word;max-width:100%}
     .qr-label span{font-size:7.5px;line-height:1.1;color:#344054;max-height:9mm;overflow:hidden}
     .qr-label em{font-style:normal;font-size:7px;line-height:1.05;color:#475467;max-height:7mm;overflow:hidden}
     .stock-marker{width:100%;display:grid;grid-template-columns:auto 1fr;gap:2mm;align-items:center;border:1px dashed #111827;border-radius:2mm;padding:1.4mm 1.6mm;margin-top:.5mm;min-height:8mm;background:#fff}
     .stock-marker strong{font-size:7px;color:#111827;white-space:nowrap}.stock-marker i{display:block;border-bottom:2px solid #111827;height:4mm;width:100%}
     .qr-label small{font-size:6.5px;line-height:1;color:#111827;word-break:break-word;font-weight:800;max-width:100%}
-    .qr-label:nth-child(16n){break-after:page}
-    @page{size:letter;margin:10mm}
-    @media screen{body{padding:12px}.qr-label-grid{box-shadow:0 0 0 1px #d0d5dd;padding:10mm}.print-note{width:190mm;margin:0 auto 8px}}
-    @media print{body{margin:0}.print-note{display:none}.qr-label-grid{box-shadow:none;padding:0}.qr-label{border-color:#111827}}
-  </style></head><body><p class="print-note">Formato hoja carta: 16 stickers por página. Cada sticker deja espacio para escribir stock físico con marcador.</p><div class="qr-label-grid">${html}</div><script>setTimeout(()=>print(),900)<\/script></body></html>`);
+    @page{size:letter;margin:8mm}
+    @media screen{body{padding:12px;background:#f3f5f8}.label-page{background:#fff;box-shadow:0 0 0 1px #d0d5dd,0 16px 40px rgba(15,76,151,.12);padding:0}.print-note{margin-bottom:8px}}
+    @media print{body{margin:0;background:#fff}.print-note{display:none}.label-page{box-shadow:none}.qr-label{border-color:#111827}}
+  </style></head><body><p class="print-note">${esc(title)} · ${normalized.length} sticker(s). Formato hoja carta: 16 stickers por página en matriz 4 x 4, con espacio para stock físico.</p>${pages}<script>setTimeout(()=>print(),900)<\/script></body></html>`);
   w.document.close();
 }
 function taskLabelItem(task, kind="material"){
@@ -1975,6 +2026,7 @@ function renderIndicators(){
   const criticalDiffs = state.counts.filter(c => c.severity === "critica" || c.severity === "crítica").length;
   const avgDiffValue = totalCounts ? diffValueTotal / totalCounts : 0;
   const reliability = reliabilityMetrics();
+  const health = inventoryHealthMetrics();
 
   cov.innerHTML = `
     <div class="summary-item"><span>Materiales activos</span><b>${fmt(total)}</b></div>
@@ -2001,6 +2053,12 @@ function renderIndicators(){
     <div class="summary-item"><span>Confiabilidad operativa</span><b>${reliability.score}% · ${esc(reliability.level)}</b></div>
     <div class="summary-item"><span>Memoria de referencias</span><b>${reliability.memoryCoverage}%</b></div>
     <div class="summary-item"><span>Completitud de datos</span><b>${reliability.dataCompleteness}%</b></div>
+    <div class="summary-item"><span>Tasa de diferencias</span><b>${health.differenceRate}%</b></div>
+    <div class="summary-item"><span>Desviación sobre valor contado</span><b>${health.shrinkageRate}%</b></div>
+    <div class="summary-item"><span>Diferencia neta valorizada</span><b>${money(health.netDiffValue)}</b></div>
+    <div class="summary-item"><span>Cumplimiento plan diario</span><b>${health.planCompliance}%</b></div>
+    <div class="summary-item"><span>Productividad estimada</span><b>${health.countsPerHour ? health.countsPerHour + " conteos/h" : "—"}</b></div>
+    <div class="summary-item"><span>Memoria mayor a 180 días</span><b>${fmt(health.staleMemory)}</b></div>
     <div class="summary-item"><span>Casos abiertos</span><b>${fmt(state.cases.length)}</b></div>
     <div class="summary-item"><span>Jefe logístico pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("jefe")).length)}</b></div>
     <div class="summary-item"><span>Auditoría pendientes</span><b>${fmt(state.cases.filter(c => String(c.status).includes("auditoria")).length)}</b></div>
@@ -2053,6 +2111,30 @@ function reliabilityMetrics(){
   const cls = score >= 95 ? "green" : score >= 85 ? "blue" : score >= 70 ? "yellow" : "red";
   return { score, level, cls, countAccuracy:Math.round(countAccuracy), valueAccuracy:Math.round(valueAccuracy), dataCompleteness:Math.round(dataCompleteness), memoryCoverage:Math.round(memoryCoverage), repeatedPenalty, openCasePenalty, criticalPenalty };
 }
+function inventoryHealthMetrics(){
+  const totalCounts = state.counts.length;
+  const diffs = state.counts.filter(c => Number(c.absDiff || 0) > 0.0001);
+  const diffValue = totalDiffValue(state.counts);
+  const countedValue = state.counts.reduce((sum,c) => sum + Math.abs(Number(c.systemQty || 0) * Number(c.unitCost || 0)), 0);
+  const netDiffValue = state.counts.reduce((sum,c) => sum + Number(c.diff || 0) * Number(c.unitCost || 0), 0);
+  const differenceRate = totalCounts ? Math.round(diffs.length / totalCounts * 100) : 0;
+  const shrinkageRate = countedValue ? Math.round((diffValue / countedValue) * 10000) / 100 : 0;
+  const avgSeconds = avgCountDuration();
+  const countsPerHour = avgSeconds ? Math.round(3600 / avgSeconds * 10) / 10 : 0;
+  const today = todayISO();
+  const planned = state.tasks.filter(t => (t.scheduledDate || "") === today);
+  const open = getOpenTaskStatuses();
+  const finished = planned.filter(t => !open.includes(t.status)).length;
+  const planCompliance = planned.length ? Math.round(finished / planned.length * 100) : 0;
+  const staleMemory = state.materials.filter(m => {
+    const mem = memoryByRef(m.ref) || m;
+    const date = mem.lastCountDate || mem.lastVerifiedDate || "";
+    if(!date) return true;
+    return daysSinceISO(date) > 180;
+  }).length;
+  return { totalCounts, differenceRate, shrinkageRate, netDiffValue, countedValue, avgSeconds, countsPerHour, planCompliance, plannedToday:planned.length, finishedToday:finished, staleMemory };
+}
+
 function intelligentAlertRows(){
   const alerts = [];
   const criticalLimit = Number(state.settings.criticalDiffValue || 500000);
@@ -2091,6 +2173,7 @@ function renderExecutiveDashboard(){
   const criticalCases = state.cases.filter(c => c.severity === "critica" || c.severity === "crítica" || (Number(c.diffValue || 0) >= Number(state.settings.criticalDiffValue || 500000)));
   const avgMin = avgCountDuration() ? Math.round(avgCountDuration()/60) : 0;
   const reliability = reliabilityMetrics();
+  const health = inventoryHealthMetrics();
   if(box){
     box.innerHTML = `
       <article class="executive-hero card">
@@ -2104,6 +2187,9 @@ function renderExecutiveDashboard(){
           <div><span>Tiempo promedio</span><b>${avgMin ? fmt(avgMin) + " min" : "—"}</b></div>
           <div><span>Confiabilidad</span><b>${reliability.score}% · ${esc(reliability.level)}</b></div>
           <div><span>Memoria referencias</span><b>${reliability.memoryCoverage}%</b></div>
+          <div><span>Plan diario</span><b>${health.planCompliance}%</b></div>
+          <div><span>Tasa diferencias</span><b>${health.differenceRate}%</b></div>
+          <div><span>Desviación valor</span><b>${health.shrinkageRate}%</b></div>
         </div>
       </article>`;
   }

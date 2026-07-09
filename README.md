@@ -1,3 +1,26 @@
+# Inventario Cíclico SIESA — V33 stickers completos y responsive automático
+
+## Novedades V33
+
+- Botón visible y funcional **Imprimir todos los stickers** en el módulo Etiquetas / Códigos.
+- Botón **Imprimir 16 visibles** para preparar exactamente la tanda operativa de hoja carta.
+- Plantilla de impresión corregida por páginas: 16 stickers por hoja en matriz 4 x 4, sin saltos raros y con espacios vacíos cuando la última página no completa los 16.
+- Cada sticker conserva QR, código de barras, código interno, nombre/referencia, ubicación/unidad y espacio para escribir **stock físico** con marcador.
+- Responsive automático por ancho y por altura: si la pantalla es de 760 px o menos, o tiene altura baja, la APP se compacta sola.
+- Modo compacto para pantallas de baja resolución: tarjetas más pequeñas, menús abreviados, botones táctiles y mejor manejo de scroll.
+- Indicadores adicionales: tasa de diferencias, desviación sobre valor contado, diferencia neta valorizada, cumplimiento del plan diario, productividad estimada y memoria mayor a 180 días.
+- Service Worker actualizado a V33.
+
+## Prueba rápida recomendada
+
+1. Entrar a **Etiquetas / Códigos**.
+2. Dejar `Cantidad a preparar = 16`.
+3. Presionar **Imprimir 16 visibles** para una hoja carta completa.
+4. Presionar **Imprimir todos los stickers** para imprimir todos los resultados del filtro actual en páginas de 16.
+5. Probar la APP en pantalla de 760 px de ancho o altura baja para validar compactación automática.
+
+---
+
 # Inventario Cíclico SIESA — V32 stickers, memoria y confiabilidad
 
 ## Novedades V32
