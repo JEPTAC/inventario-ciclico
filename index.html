@@ -41,7 +41,7 @@
       <div class="user-box"><span id="userRoleBadge" class="role-badge">Rol</span><b id="userName">Usuario</b><small id="userEmail">correo</small></div>
       <nav class="nav">
         <button class="nav-link active" data-view="dashboardView">Panel</button>
-        <button class="nav-link" data-view="expressView" data-roles="super_admin,inventario">Conteo Express</button>
+        <button class="nav-link" data-view="expressView" data-roles="super_admin,inventario">Conteo Simple</button>
         <button class="nav-link" data-view="usersView" data-roles="super_admin">Usuarios</button>
         <button class="nav-link" data-view="driveView" data-roles="super_admin,jefe_logistico">Drive / SIESA</button>
         <button class="nav-link" data-view="inventoryView" data-roles="super_admin,inventario">Mis pendientes</button>
@@ -64,8 +64,8 @@
         <div><h2 id="pageTitle">Panel general</h2><p id="pageSubtitle">Estado de sincronización, tareas y casos pendientes.</p></div>
         <div class="top-actions">
           <div id="offlineStatusPill" class="offline-pill"><span id="offlineStateBadge">En línea</span><b id="offlineQueueCount">0</b></div>
-          <button id="connectDriveBtn" class="btn secondary" data-roles="super_admin,jefe_logistico,inventario,auditoria,gerencia">Conectar Drive</button>
-          <button id="installAppBtn" class="btn secondary" type="button">Instalar APP</button><button id="enableAlertsBtn" class="btn warn" type="button">Activar alertas</button><button id="quickSyncBtn" class="btn primary" data-roles="super_admin,jefe_logistico">Sincronizar SIESA</button>
+          <button id="connectDriveBtn" class="btn secondary" data-roles="super_admin,jefe_logistico,auditoria,gerencia">Conectar Drive</button>
+          <button id="installAppBtn" class="btn secondary" data-roles="super_admin,jefe_logistico,auditoria,gerencia" type="button">Instalar APP</button><button id="enableAlertsBtn" class="btn warn" data-roles="super_admin,jefe_logistico,auditoria,gerencia" type="button">Activar alertas</button><button id="quickSyncBtn" class="btn primary" data-roles="super_admin,jefe_logistico">Sincronizar SIESA</button>
         </div>
       </header>
 
@@ -123,8 +123,8 @@
         <div class="express-hero card">
           <div class="express-hero-main">
             <span class="tag blue">Modo bodega</span>
-            <h3>Conteo Express</h3>
-            <p>Escanea ubicación o referencia, confirma el nombre del material, registra la cantidad física y pasa al siguiente material sin volver a la tabla.</p>
+            <h3 id="expressTitle">Conteo Simple</h3>
+            <p id="expressHelpText">Escanea ubicación o referencia, confirma el nombre del material, registra únicamente la cantidad física y pasa al siguiente material.</p>
             <div class="express-progress">
               <div class="progress-track"><div id="expressProgressBar" class="progress-fill" style="width:0%"></div></div>
               <b id="expressProgressText">0 de 0</b>
@@ -158,7 +158,7 @@
 
           <article class="card">
             <div class="card-head">
-              <div><h3>Lista rápida</h3><p>Ordenada por fecha, reconteo, riesgo y valor.</p></div>
+              <div><h3 id="expressListTitle">Pendientes</h3><p id="expressListHelp">Ordenada por fecha y reconteos. El auxiliar solo ve los datos necesarios para contar.</p></div>
               <select id="expressTaskTypeFilter" class="compact-select">
                 <option value="">Todas</option>
                 <option value="today">Solo hoy</option>
@@ -240,6 +240,8 @@
             <div class="card-head">
               <div><h3>Generador de etiquetas y códigos</h3><p>Prepara e imprime stickers de 16 por hoja para pegar mientras se cuenta. Cada etiqueta deja espacio para escribir el stock físico con marcador.</p></div>
               <div class="button-row compact-actions">
+                <button id="loadDailyLabelsBtn" class="btn secondary" type="button">Cargar pendientes de hoy</button>
+                <button id="printDailyLabelsBtn" class="btn warn" type="button">Imprimir stickers diarios</button>
                 <button id="printQrLabelsBtn" class="btn primary" type="button">Imprimir 16 visibles</button>
                 <button id="printAllQrLabelsBtn" class="btn blue" type="button">Imprimir todos los stickers</button>
               </div>
@@ -251,7 +253,7 @@
               <label>Cantidad a preparar<input id="qrLimit" type="number" min="1" max="160" value="16"></label>
             </div>
             <div class="quick-code-panel">
-              <div class="card-head compact"><div><h4>Crear código en el momento</h4><p>Útil cuando en bodega aparece un material o ubicación sin etiqueta. El código interno queda simple, legible y trazable: EI-REF-... o EI-UBI-...</p></div><span class="tag blue">V33</span></div>
+              <div class="card-head compact"><div><h4>Crear código en el momento</h4><p>Útil cuando en bodega aparece un material o ubicación sin etiqueta. El código interno queda simple, legible y trazable: EI-REF-... o EI-UBI-...</p></div><span class="tag blue">V34</span></div>
               <div class="config-grid">
                 <label>Clase<select id="quickQrKind"><option value="material">Referencia / material</option><option value="location">Ubicación / estante</option></select></label>
                 <label>Referencia<input id="quickQrRef" placeholder="Ej: 105041 / código SIESA"></label>

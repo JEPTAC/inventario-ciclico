@@ -242,3 +242,30 @@ html.auto-ultra-compact .compact-actions .btn{flex:1 1 100%}
   .compact-actions .btn{flex:1 1 100%}
   .qr-label-grid{max-height:none}
 }
+
+/* V34 · modo auxiliar: conteo ciego, simple y sin elementos administrativos */
+html.operator-mode .sidebar .brand p{display:none}
+html.operator-mode .top-actions .btn.hidden{display:none!important}
+html.operator-mode .topbar{align-items:center}
+html.operator-mode .topbar p{max-width:720px}
+html.operator-mode .express-hero{grid-template-columns:1.25fr .75fr;background:linear-gradient(135deg,#0b2d5c,#0f4c97)}
+html.operator-mode .express-hero h3{font-size:38px}
+html.operator-mode .express-hero-kpis{grid-template-columns:repeat(3,1fr)}
+html.operator-mode .express-panel{border:2px solid #dbe8f6}
+html.operator-mode .express-scan-row{grid-template-columns:1fr 1fr}
+html.operator-mode .operator-count-card{border:2px solid #b8d6ff;background:linear-gradient(180deg,#f9fcff,#fff);box-shadow:0 18px 40px rgba(15,76,151,.10)}
+html.operator-mode .operator-ref-title h2{font-size:44px;letter-spacing:.01em}
+html.operator-mode .operator-ref-title strong{font-size:20px;line-height:1.25}
+.operator-data-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}.operator-data-grid>div{border:1px solid #dfeaf6;border-radius:18px;padding:12px;background:#fff}.operator-data-grid span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:950;color:#64758d}.operator-data-grid b{display:block;color:#0b2d5c;font-size:18px;margin-top:4px;word-break:break-word}.operator-blind-note,.operator-preview-note{border:1px solid #b8d6ff;background:#eff6ff;border-radius:18px;padding:13px 15px;display:grid;gap:4px;color:#0b2d5c}.operator-blind-note b,.operator-preview-note b{font-size:15px}.operator-blind-note span,.operator-preview-note span{font-size:13px;color:#35567a;line-height:1.35}.operator-actions .big-action{width:100%;min-height:58px;font-size:18px}.operator-mini .mini-footer{justify-content:space-between}.operator-task-list,.operator-history-list{display:grid!important;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}.operator-task-card{border:2px solid #dbe8f6}.operator-task-card .task-card-actions .tiny{min-height:42px;padding-inline:18px;font-size:14px}
+html.operator-mode #countCodePanel{display:none!important}
+html.operator-mode #countDialog .dialog-card{max-width:620px}
+html.operator-mode #countDialog label:has(#countDate),html.operator-mode #countDialog label:has(#countSupport),html.operator-mode #countDialog label:has(#countPhoto),html.operator-mode #countDialog label:has(#countCause),html.operator-mode #countDialog label:has(#countObs){display:none!important}
+html.operator-mode #countDialog .notice.compact{display:none!important}
+html.operator-mode #countQtyLabel{grid-column:1/-1;font-size:16px;font-weight:950;color:#0b2d5c}
+html.operator-mode #countQty{min-height:64px;font-size:32px;text-align:center;font-weight:950;border:2px solid #0f4c97;background:#f8fbff}
+html.operator-mode #countDialog .qty-pad button{min-height:56px;font-size:18px}
+html.operator-mode #countDialog .dialog-actions{grid-template-columns:1fr 1fr}
+html.operator-mode #saveCountBtn{display:none}
+html.operator-mode #saveNextCountBtn{min-height:52px;font-size:16px}
+@media(max-width:760px){html.operator-mode .express-hero{grid-template-columns:1fr}html.operator-mode .express-hero-kpis{grid-template-columns:repeat(3,1fr)}html.operator-mode .express-scan-row{grid-template-columns:1fr}.operator-data-grid{grid-template-columns:1fr}.operator-task-list,.operator-history-list{grid-template-columns:1fr}html.operator-mode .operator-ref-title h2{font-size:34px}html.operator-mode #countDialog .dialog-actions{grid-template-columns:1fr}html.operator-mode #countDialog .qty-pad{grid-template-columns:repeat(4,1fr)}}
+@media(max-height:760px){html.operator-mode .express-hero{padding:12px}html.operator-mode .express-hero h3{font-size:28px}html.operator-mode .operator-ref-title h2{font-size:32px}html.operator-mode .operator-data-grid>div{padding:9px}html.operator-mode #countQty{min-height:54px;font-size:28px}}

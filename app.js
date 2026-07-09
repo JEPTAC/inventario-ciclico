@@ -72,7 +72,7 @@ const state = {
     saveNextRequested: false
   },
   offlineQueue: JSON.parse(localStorage.getItem("inventarioOfflineCountQueue") || "[]"),
-  labelQueue: JSON.parse(localStorage.getItem("inventarioLabelQueueV33") || localStorage.getItem("inventarioLabelQueueV32") || localStorage.getItem("inventarioLabelQueueV31") || "[]")
+  labelQueue: JSON.parse(localStorage.getItem("inventarioLabelQueueV34") || localStorage.getItem("inventarioLabelQueueV33") || localStorage.getItem("inventarioLabelQueueV32") || localStorage.getItem("inventarioLabelQueueV31") || "[]")
 };
 
 function showBootError(message, err = null){
@@ -115,20 +115,20 @@ const $$ = sel => Array.from(document.querySelectorAll(sel));
 const ROLE_LABELS = {
   super_admin: "Super admin",
   admin: "Super admin",
-  inventario: "Inventario",
+  inventario: "Auxiliar de inventario",
   jefe_logistico: "Jefe logístico",
   auditoria: "Auditoría interna",
   gerencia: "Gerencia"
 };
 
 const VIEW_ACCESS = {
-  dashboardView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
+  dashboardView: ["super_admin", "jefe_logistico", "auditoria", "gerencia"],
   expressView: ["super_admin", "inventario"],
   usersView: ["super_admin"],
   driveView: ["super_admin", "jefe_logistico"],
   inventoryView: ["super_admin", "inventario"],
   historyView: ["super_admin", "inventario"],
-  cableView: ["super_admin", "inventario", "jefe_logistico"],
+  cableView: ["super_admin", "jefe_logistico"],
   jefeView: ["super_admin", "jefe_logistico"],
   auditoriaView: ["super_admin", "auditoria"],
   gerenciaView: ["super_admin", "gerencia"],
@@ -412,6 +412,7 @@ function logSync(message){
 function role(){ return state.profile?.role === "admin" ? "super_admin" : state.profile?.role; }
 function isSuper(){ return role() === "super_admin"; }
 function hasAny(roles){ return isSuper() || roles.includes(role()); }
+function isOperatorRole(){ return role() === "inventario"; }
 function formatDateTime(v){
   try{ if(v?.toDate) return v.toDate().toLocaleString("es-CO"); }catch(e){}
   return v ? String(v) : "—";
@@ -514,6 +515,8 @@ function setupEvents(){
   $("#clearLabelQueueBtn")?.addEventListener("click", clearLabelQueue);
   $("#printQrLabelsBtn")?.addEventListener("click", printQrLabels);
   $("#printAllQrLabelsBtn")?.addEventListener("click", printAllQrLabels);
+  $("#loadDailyLabelsBtn")?.addEventListener("click", loadDailyTaskLabels);
+  $("#printDailyLabelsBtn")?.addEventListener("click", printDailyTaskLabels);
   $$('[data-qty-step]').forEach(btn => btn.addEventListener("click", () => bumpCountQty(Number(btn.dataset.qtyStep || 0))));
   $$('[data-qty-clear]').forEach(btn => btn.addEventListener("click", clearCountQty));
   window.addEventListener("online", () => { updateOfflineStatus(); flushOfflineCountQueue(); });
@@ -765,7 +768,7 @@ function getInitialViewFromUrl(){
       configuracion:"configView", configuración:"configView", config:"configView"
     };
     const viewId = viewAliases[key] || (requested.endsWith("View") ? requested : "dashboardView");
-    return VIEW_ACCESS[viewId] ? viewId : "dashboardView";
+    return VIEW_ACCESS[viewId] ? viewId : (role() === "inventario" ? "expressView" : "dashboardView");
   }catch(err){
     return "dashboardView";
   }
@@ -782,6 +785,7 @@ function showApp(){
   setView(getInitialViewFromUrl());
 }
 function applyRoleVisibility(){
+  document.documentElement.classList.toggle("operator-mode", role() === "inventario");
   $$('[data-roles]').forEach(el => {
     const allowed = el.dataset.roles.split(",").map(x => x.trim());
     el.classList.toggle("hidden", !hasAny(allowed));
@@ -789,12 +793,14 @@ function applyRoleVisibility(){
   $$(".nav-link").forEach(btn => {
     const allowed = VIEW_ACCESS[btn.dataset.view] || [];
     btn.classList.toggle("hidden", !hasAny(allowed));
+    if(btn.dataset.view === "expressView") btn.textContent = role() === "inventario" ? "Conteo simple" : "Conteo Express";
+    if(btn.dataset.view === "qrLabelsView" && role() === "inventario") btn.textContent = "Etiquetas diarias";
   });
 }
 function setView(viewId){
   if(!hasAny(VIEW_ACCESS[viewId] || [])){
-    toast("Tu usuario no tiene acceso a este módulo.", "error");
-    return;
+    if(role() === "inventario" && viewId === "dashboardView") viewId = "expressView";
+    else { toast("Tu usuario no tiene acceso a este módulo.", "error"); return; }
   }
   state.activeView = viewId;
   $$(".view").forEach(v => v.classList.remove("active"));
@@ -802,7 +808,7 @@ function setView(viewId){
   $$(".nav-link").forEach(b => b.classList.toggle("active", b.dataset.view === viewId));
   const titles = {
     dashboardView:["Panel general","Estado de sincronización, tareas y casos pendientes."],
-    expressView:["Conteo Express","Flujo rápido por ubicación, referencia, cantidad física, evidencia y siguiente tarea."],
+    expressView:[role() === "inventario" ? "Conteo simple" : "Conteo Express", role() === "inventario" ? "Registra únicamente la cantidad física. El stock del sistema queda oculto para un conteo ciego y transparente." : "Flujo rápido por ubicación, referencia, cantidad física, evidencia y siguiente tarea."],
     usersView:["Usuarios","Creación y administración de roles por super admin."],
     driveView:["Drive / SIESA","Lectura del Excel diario y sincronización con Firebase."],
     inventoryView:["Mis pendientes","Listado operativo de tareas asignadas."],
@@ -936,7 +942,7 @@ function renderRoleDashboard(){
   const criticalCases = state.cases.filter(c => c.severity === "critica" || c.severity === "crítica" || Number(c.diffValue || 0) >= Number(state.settings.criticalDiffValue || 500000)).length;
   const diffValue = state.cases.reduce((s,c)=>s+Number(c.diffValue || 0),0);
   const texts = {
-    inventario: { title:"Tus conteos de hoy", body:`Tienes ${fmt(pendingToday || open.length)} tareas abiertas. Entra por Conteo Express para escanear, contar y guardar sin navegar por tablas.`, action:"Iniciar conteo", view:"expressView" },
+    inventario: { title:"Conteo simple", body:`Tienes ${fmt(pendingToday || open.length)} tareas abiertas. Solo debes abrir la tarea, escribir la cantidad física y guardar. El stock sistema permanece oculto.`, action:"Iniciar conteo", view:"expressView" },
     jefe_logistico: { title:"Control logístico", body:`Casos abiertos: ${fmt(state.cases.filter(c => ["pending_jefe_logistico","pending_jefe_approval"].includes(c.status)).length)}. Diferencias críticas: ${fmt(criticalCases)}. Valor pendiente: ${money(diffValue)}.`, action:"Revisar diferencias", view:"jefeView" },
     auditoria: { title:"Auditoría", body:`Casos para auditoría: ${fmt(state.cases.filter(c => c.status === "pending_auditoria").length)}. Revisa evidencia, historial y conteo independiente.`, action:"Abrir auditoría", view:"auditoriaView" },
     gerencia: { title:"Resumen para decisión", body:`Pendientes gerencia: ${fmt(state.cases.filter(c => c.status === "pending_gerencia").length)}. Valor en diferencia: ${money(diffValue)}.`, action:"Ver decisiones", view:"gerenciaView" },
@@ -955,18 +961,45 @@ function expressProgressMeta(){
   const done = doneTaskIds.size;
   return { total, done, pct: total ? Math.round(done / total * 100) : 0 };
 }
+
+function renderExpressRoleHeader(progress){
+  const operator = isOperatorRole();
+  if($("#expressTitle")) $("#expressTitle").textContent = operator ? "Conteo simple" : "Conteo Express";
+  if($("#expressHelpText")) $("#expressHelpText").textContent = operator
+    ? "Abre una tarea, verifica referencia/nombre/ubicación, escribe la cantidad física y guarda. No se muestra el stock del sistema."
+    : "Escanea ubicación o referencia, confirma el nombre del material, registra la cantidad física y pasa al siguiente material.";
+  if($("#expressListTitle")) $("#expressListTitle").textContent = operator ? "Tus pendientes" : "Lista rápida";
+  if($("#expressListHelp")) $("#expressListHelp").textContent = operator ? "Solo aparecen las tareas abiertas que debes contar." : "Ordenada por fecha, reconteo, riesgo y valor.";
+  const filter = $("#expressTaskTypeFilter");
+  if(filter){
+    const current = filter.value;
+    filter.innerHTML = operator
+      ? `<option value="">Todas</option><option value="today">Solo hoy</option><option value="recount">Reconteos</option><option value="cable">Cables / metraje</option>`
+      : `<option value="">Todas</option><option value="today">Solo hoy</option><option value="recount">Reconteos</option><option value="cable">Cables / metraje</option><option value="risk">Alto riesgo</option>`;
+    filter.value = [...filter.options].some(o => o.value === current) ? current : "";
+  }
+  const hero = document.querySelector(".express-hero-kpis");
+  if(hero){
+    hero.innerHTML = operator
+      ? `<div><span>Pendientes</span><b id="expressPendingToday">0</b></div><div><span>Contados</span><b id="expressDoneToday">0</b></div><div><span>Offline</span><b id="expressOfflineQueue">0</b></div>`
+      : `<div><span>Pendientes hoy</span><b id="expressPendingToday">0</b></div><div><span>Reconteos</span><b id="expressRecounts">0</b></div><div><span>Críticos</span><b id="expressRiskHigh">0</b></div><div><span>Offline</span><b id="expressOfflineQueue">0</b></div>`;
+  }
+  $("#expressProgressBar") && ($("#expressProgressBar").style.width = `${progress.pct}%`);
+  if($("#expressProgressText")) $("#expressProgressText").textContent = `${fmt(progress.done)} de ${fmt(progress.total)} · ${progress.pct}%`;
+  if($("#expressPendingToday")) $("#expressPendingToday").textContent = fmt(state.tasks.filter(t => getOpenTaskStatuses().includes(t.status) && (t.scheduledDate || "") === todayISO()).length);
+  if($("#expressDoneToday")) $("#expressDoneToday").textContent = fmt(progress.done);
+  if($("#expressRecounts")) $("#expressRecounts").textContent = fmt(state.tasks.filter(t => t.status === "recount_required").length);
+  if($("#expressRiskHigh")) $("#expressRiskHigh").textContent = fmt(state.tasks.filter(t => taskRiskMeta(t).score >= Number(state.settings.highRiskScoreThreshold ?? 70)).length);
+  if($("#expressOfflineQueue")) $("#expressOfflineQueue").textContent = fmt(state.offlineQueue?.length || 0);
+}
+
 function renderExpress(){
   const list = $("#expressWorklist");
   const current = $("#expressCurrentCard");
   if(!list || !current) return;
   const rows = getExpressTasks();
   const progress = expressProgressMeta();
-  $("#expressProgressBar") && ($("#expressProgressBar").style.width = `${progress.pct}%`);
-  if($("#expressProgressText")) $("#expressProgressText").textContent = `${fmt(progress.done)} de ${fmt(progress.total)} · ${progress.pct}%`;
-  if($("#expressPendingToday")) $("#expressPendingToday").textContent = fmt(state.tasks.filter(t => getOpenTaskStatuses().includes(t.status) && (t.scheduledDate || "") === todayISO()).length);
-  if($("#expressRecounts")) $("#expressRecounts").textContent = fmt(state.tasks.filter(t => t.status === "recount_required").length);
-  if($("#expressRiskHigh")) $("#expressRiskHigh").textContent = fmt(state.tasks.filter(t => taskRiskMeta(t).score >= Number(state.settings.highRiskScoreThreshold ?? 70)).length);
-  if($("#expressOfflineQueue")) $("#expressOfflineQueue").textContent = fmt(state.offlineQueue?.length || 0);
+  renderExpressRoleHeader(progress);
 
   let selected = rows.find(t => t.id === state.express.selectedTaskId) || rows[0] || null;
   if(selected){
@@ -981,9 +1014,34 @@ function expressTaskDetail(t){
   const meta = displayMeta(t);
   const risk = t.risk || taskRiskMeta(t);
   const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje" || meta.isCable;
-  const value = Number(meta.inventoryValue || Number(meta.systemQty || 0) * Number(meta.unitCost || 0));
+  const operator = isOperatorRole();
   const mem = memoryByRef(meta.ref) || meta;
   const hasMem = Boolean(mem?.lastCountDate);
+  if(operator){
+    const memHtml = hasMem
+      ? `<div class="memory-box operator-memory"><span>Historial interno</span><b>Referencia ya tiene memoria registrada</b><small>Último conteo guardado: ${esc(mem.lastCountDate || "")}. Las cantidades históricas no se muestran para evitar sesgo.</small></div>`
+      : `<div class="memory-box operator-memory"><span>Historial interno</span><b>Primer conteo de esta referencia</b><small>Al guardar, la APP memorizará esta referencia aunque cambie el Excel SIESA.</small></div>`;
+    return `<div class="express-current-card operator-count-card">
+      <div class="express-current-top"><span class="pill blue">Conteo ciego activo</span>${statusPill(t.status)}</div>
+      <div class="express-ref-title operator-ref-title">
+        <span>Referencia</span>
+        <h2>${esc(meta.ref || "")}</h2>
+        <strong>${esc(meta.description || "Referencia sin nombre cargado")}</strong>
+        ${meta.line ? `<small>${esc(meta.line)}</small>` : ""}
+      </div>
+      <div class="operator-data-grid">
+        <div><span>Ubicación</span><b>${esc(meta.location || "Sin ubicación")}</b></div>
+        <div><span>Unidad</span><b>${esc(meta.unit || (isCable ? "m" : "und"))}</b></div>
+        <div><span>Tipo</span><b>${isCable ? "Metraje de cable" : "Inventario"}</b></div>
+      </div>
+      ${memHtml}
+      <div class="operator-blind-note"><b>No se muestra el stock del sistema.</b><span>Escribe únicamente lo que ves físicamente. La diferencia la calcularán el sistema y el jefe logístico después de guardar.</span></div>
+      <div class="button-row express-main-actions operator-actions">
+        <button class="btn primary big-action" type="button" data-express-count="${esc(t.id)}">Contar ahora</button>
+      </div>
+    </div>`;
+  }
+  const value = Number(meta.inventoryValue || Number(meta.systemQty || 0) * Number(meta.unitCost || 0));
   const memHtml = hasMem
     ? `<div class="memory-box"><span>Última contabilización guardada</span><b>${esc(mem.lastCountDate || "")} · ${esc(mem.lastResult || meta.lastCountResult || "")}</b><small>Físico: ${fmt(mem.lastCountedQty ?? meta.lastCountedQty ?? 0)} · Sistema: ${fmt(mem.lastSystemQty ?? meta.lastCountSystemQty ?? 0)} · Dif: ${fmt(mem.lastDiff ?? meta.lastCountDiff ?? 0)} · ${esc(mem.lastCountedBy || meta.lastCountedBy || "sin usuario")}</small></div>`
     : `<div class="memory-box"><span>Memoria de referencia</span><b>Sin conteo histórico registrado</b><small>Cuando se guarde el primer conteo, esta referencia quedará memorizada aunque cambie el Excel SIESA.</small></div>`;
@@ -1016,6 +1074,14 @@ function expressTaskMiniCard(t, active=false){
   const meta = displayMeta(t);
   const risk = t.risk || taskRiskMeta(t);
   const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje" || meta.isCable;
+  if(isOperatorRole()){
+    return `<button class="express-mini-card operator-mini ${active ? "active" : ""}" type="button" data-select-express="${esc(t.id)}">
+      <span class="mini-ref">${esc(meta.ref || "")}</span>
+      <span class="mini-desc"><b>${esc(meta.description || "Sin nombre")}</b></span>
+      <span class="mini-meta">${esc(meta.location || "Sin ubicación")} · ${esc(meta.unit || (isCable ? "m" : "und"))}</span>
+      <span class="mini-footer">${statusPill(t.status)}<b class="pill blue">Contar</b></span>
+    </button>`;
+  }
   return `<button class="express-mini-card ${active ? "active" : ""}" type="button" data-select-express="${esc(t.id)}">
     <span class="mini-ref">${esc(meta.ref || "")}</span>
     <span class="mini-desc"><b>${esc(meta.description || "Sin nombre")}</b></span>
@@ -1250,7 +1316,7 @@ function buildManualLabelItem(){
   };
 }
 function saveLabelQueue(){
-  localStorage.setItem("inventarioLabelQueueV33", JSON.stringify((state.labelQueue || []).slice(-320)));
+  localStorage.setItem("inventarioLabelQueueV34", JSON.stringify((state.labelQueue || []).slice(-320)));
 }
 async function persistGeneratedLabel(item){
   if(!state.user || navigator.onLine === false || !item?.code) return;
@@ -1268,7 +1334,7 @@ async function persistGeneratedLabel(item){
       updatedAt:nowTS(),
       createdByUid:state.user.uid,
       createdByEmail:state.user.email,
-      source:"v33_stickers_responsive_memoria"
+      source:"v34_operator_simple_count"
     }, { merge:true });
   }catch(err){ console.warn("No se pudo registrar etiqueta generada en Firestore", err); }
 }
@@ -1373,6 +1439,32 @@ function qrLabelItemsFromFilters({ all=false } = {}){
   }
   return all ? items : items.slice(0, visibleLimit);
 }
+
+function dailyTaskLabelItems(){
+  const today = todayISO();
+  let rows = state.tasks.filter(t => getOpenTaskStatuses().includes(t.status) && (t.scheduledDate || "") === today);
+  if(isOperatorRole()) rows = rows.filter(t => ["assigned","recount_required","pending_inventory"].includes(t.status));
+  rows.sort((a,b) => String(a.location || "").localeCompare(String(b.location || "")) || String(a.materialRef || "").localeCompare(String(b.materialRef || "")));
+  return rows.map(t => taskLabelItem(t, "material")).filter(Boolean);
+}
+function loadDailyTaskLabels(){
+  const items = dailyTaskLabelItems();
+  if(!items.length) return toast("No hay pendientes de hoy para cargar etiquetas.", "error");
+  state.labelQueue ||= [];
+  const byKey = new Map((state.labelQueue || []).map(x => [`${x.kind}|${x.code}`, x]));
+  items.forEach(item => byKey.set(`${item.kind}|${item.code}`, { ...item, createdAt:new Date().toISOString(), createdBy:state.user?.email || "", source:"daily_tasks" }));
+  state.labelQueue = [...byKey.values()].slice(0, 160);
+  saveLabelQueue();
+  renderLabelQueue();
+  renderQuickLabelDraft();
+  toast(`Etiquetas diarias cargadas: ${items.length}`);
+}
+function printDailyTaskLabels(){
+  const items = dailyTaskLabelItems();
+  if(!items.length) return toast("No hay stickers diarios para imprimir.", "error");
+  printLabelItems(items, $("#qrLabelSize")?.value || "sheet16", { title:"Stickers diarios de conteo" });
+}
+
 function printQrLabels(){
   const items = qrLabelItemsFromFilters({ all:false });
   printLabelItems(items, $("#qrLabelSize")?.value || "sheet16", { title:"Etiquetas visibles" });
@@ -1752,6 +1844,19 @@ function renderCableTasks(){
 }
 function taskTable(rows, cable = false){
   if(!rows.length) return `<div class="empty">No hay tareas abiertas.</div>`;
+  if(isOperatorRole()){
+    return `<div class="task-card-list operator-task-list">${rows.map(t => {
+      const meta = displayMeta(t);
+      const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje" || meta.isCable;
+      const canCount = ["assigned","recount_required","pending_inventory"].includes(t.status);
+      return `<article class="task-card operator-task-card">
+        <div class="task-card-top"><b>${esc(meta.ref || t.materialRef || "")}</b>${statusPill(t.status)}</div>
+        <p>${esc(meta.description || "Referencia sin nombre")}</p>
+        <div class="task-card-meta"><span>${esc(meta.location || "Sin ubicación")}</span><span>Unidad: ${esc(meta.unit || (isCable ? "m" : "und"))}</span><span>${isCable ? "Cable / metraje" : "Inventario"}</span></div>
+        <div class="task-card-actions">${canCount ? `<button class="tiny blue" data-count-task="${esc(t.id)}">Contar</button>` : ""}</div>
+      </article>`;
+    }).join("")}</div>`;
+  }
   const cards = `<div class="task-card-list">${rows.map(t => {
     const risk = taskRiskMeta(t);
     const value = Number(t.inventoryValue || ((t.unitCost || 0) * (t.systemQty || 0)) || 0);
@@ -1786,6 +1891,10 @@ function renderHistory(){
   if(!isSuper()) rows = rows.filter(c => c.countedByUid === state.user?.uid || c.countedByEmail === state.user?.email);
   rows = rows.slice(0,120);
   if(!rows.length){ el.innerHTML = `<div class="empty">Aún no hay conteos recientes para mostrar.</div>`; return; }
+  if(isOperatorRole()){
+    el.innerHTML = `<div class="task-card-list operator-history-list">${rows.map(c => `<article class="task-card operator-task-card"><div class="task-card-top"><b>${esc(c.materialRef || "")}</b><span class="pill blue">Guardado</span></div><p>${esc(c.description || "")}</p><div class="task-card-meta"><span>${esc(c.date || formatDateTime(c.createdAt))}</span><span>Físico registrado: ${fmt(c.countedQty || 0)}</span><span>${c.countDurationSeconds ? fmt(Math.round(Number(c.countDurationSeconds)/60)) + " min" : "—"}</span></div></article>`).join("")}</div>`;
+    return;
+  }
   const cards = `<div class="task-card-list">${rows.map(c => `<article class="task-card"><div class="task-card-top"><b>${esc(c.materialRef || "")}</b><span class="pill ${severityClass(c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto"))}">${severityLabel(c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto"))}</span></div><p>${esc(c.description || "")}</p><div class="task-card-meta"><span>${esc(c.date || "")}</span><span>Diferencia ${fmt(c.diff || 0)}</span><span>${money(c.diffValue || 0)}</span></div></article>`).join("")}</div>`;
   const table = `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Referencia</th><th>Descripción</th><th>Sistema</th><th>Físico</th><th>Diferencia</th><th>Valor</th><th>Severidad</th><th>Tiempo</th><th>Usuario</th></tr></thead><tbody>${rows.map(c => `<tr><td>${esc(c.date || formatDateTime(c.createdAt))}</td><td><b>${esc(c.materialRef || "")}</b></td><td>${esc(c.description || "")}</td><td>${fmt(c.systemQty || 0)}</td><td>${fmt(c.countedQty || 0)}</td><td>${fmt(c.diff || 0)}</td><td>${money(c.diffValue || 0)}</td><td><span class="pill ${severityClass(c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto"))}">${severityLabel(c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto"))}</span></td><td>${c.countDurationSeconds ? fmt(Math.round(Number(c.countDurationSeconds)/60)) + " min" : "—"}</td><td>${esc(c.countedByEmail || "")}</td></tr>`).join("")}</tbody></table></div>`;
   el.innerHTML = cards + table;
@@ -1920,7 +2029,7 @@ function severityClass(severity){
   return { exacto:"green", menor:"yellow", media:"blue", critica:"red" }[severity] || "gray";
 }
 function shouldBlindCount(){
-  return role() === "inventario" && state.settings.blindCountInventory !== false;
+  return role() === "inventario";
 }
 function setSystemQtyVisibility(blind){
   const label = $("#systemQtyLabel");
@@ -1930,6 +2039,10 @@ function setSystemQtyVisibility(blind){
 function updateCountPreview(){
   const el = $("#countDiffPreview");
   if(!el) return;
+  if(shouldBlindCount()){
+    el.innerHTML = `<div class="operator-preview-note"><b>Conteo ciego activo.</b><span>La APP no muestra diferencia, porcentaje, valor ni stock sistema al auxiliar. Solo guarda la cantidad física para validación posterior.</span></div>`;
+    return;
+  }
   const systemQty = num($("#countSystemQty")?.value || 0);
   const countedRaw = $("#countQty")?.value;
   if(countedRaw === "" || countedRaw === undefined){
@@ -2943,6 +3056,7 @@ async function generateCableTasks(showToast = true){
 function renderCountCodePanel(item){
   const el = $("#countCodePanel");
   if(!el) return;
+  if(isOperatorRole()){ el.innerHTML = ""; return; }
   const meta = displayMeta(item || {});
   const refCode = inventoryCode("material", meta.ref || item?.materialRef || "");
   const locCode = meta.location ? inventoryCode("location", meta.location) : "Sin ubicación";
@@ -2970,10 +3084,10 @@ function openTaskCountDialog(taskId){
   if($("#countUnitCost")) $("#countUnitCost").value = Number(meta.unitCost || 0);
   $("#countSupport").value = ""; $("#countCause").value = "N/A"; $("#countObs").value = ""; if($("#countPhoto")) $("#countPhoto").value = "";
   setSystemQtyVisibility(shouldBlindCount());
-  $("#countDialogTitle").textContent = cable ? "Registrar metraje físico" : "Registrar conteo físico";
+  $("#countDialogTitle").textContent = isOperatorRole() ? (cable ? "Contar metros físicos" : "Contar cantidad física") : (cable ? "Registrar metraje físico" : "Registrar conteo físico");
   $("#systemQtyLabel").childNodes[0].textContent = cable ? "Metros sistema" : "Stock sistema";
   $("#countQtyLabel").childNodes[0].textContent = cable ? "Metros físicos contados" : "Cantidad física contada";
-  $("#countDialogSubtitle").textContent = `${meta.ref} · ${meta.description || "Referencia sin nombre"} · ${meta.location || "Sin ubicación"}`;
+  $("#countDialogSubtitle").textContent = isOperatorRole() ? `${meta.ref} · ${meta.description || "Referencia sin nombre"} · ${meta.location || "Sin ubicación"} · CONTEO CIEGO` : `${meta.ref} · ${meta.description || "Referencia sin nombre"} · ${meta.location || "Sin ubicación"}`;
   renderCountCodePanel(task);
   updateCountPreview();
   $("#countDialog").showModal();
@@ -3156,9 +3270,10 @@ async function saveCount(e){
     const caseItem = caseId ? state.cases.find(c => c.id === caseId) : null;
     const context = task || caseItem;
     const diffMeta = buildDiffMeta(diff, systemQty, Number($("#countUnitCost")?.value || context?.unitCost || 0));
-    if(photoFile){ toast("Sin conexión no se puede subir foto a Drive. Espera conexión o guarda soporte textual si la severidad lo permite.", "error"); return; }
-    if(requiresPhotoForCount(diffMeta, context)){ toast("Este conteo requiere foto obligatoria; debe guardarse cuando vuelva la conexión.", "error"); return; }
-    if(requiresSupportForCount(diffMeta) && !support && !obs && cause === "N/A"){ toast("Registra causa, soporte u observación para dejar trazabilidad de la diferencia.", "error"); return; }
+    const blindOperator = shouldBlindCount() && isOperatorRole();
+    if(photoFile){ toast("Sin conexión no se puede subir foto a Drive. Espera conexión o guarda sin foto.", "error"); return; }
+    if(!blindOperator && requiresPhotoForCount(diffMeta, context)){ toast("Este conteo requiere foto obligatoria; debe guardarse cuando vuelva la conexión.", "error"); return; }
+    if(!blindOperator && requiresSupportForCount(diffMeta) && !support && !obs && cause === "N/A"){ toast("Registra causa, soporte u observación para dejar trazabilidad de la diferencia.", "error"); return; }
     enqueueOfflineCount(buildOfflinePayload({ task, caseItem, mode, saveAndNext }));
     $("#countDialog").close();
     renderAll();
@@ -3176,8 +3291,9 @@ async function saveCount(e){
     const task = { id:taskSnap.id, ...taskSnap.data() };
     const diffMeta = buildDiffMeta(diff, systemQty, Number(task.unitCost || 0));
     const isCable = task.taskType === "cable_metraje" || task.type === "cable_metraje";
-    if(requiresPhotoForCount(diffMeta, task) && !photoFile){ toast("La diferencia requiere foto obligatoria antes de guardar.", "error"); return; }
-    if(requiresSupportForCount(diffMeta) && !support && !obs && cause === "N/A"){ toast("Registra causa, soporte u observación para dejar trazabilidad de la diferencia.", "error"); return; }
+    const blindOperator = shouldBlindCount() && isOperatorRole();
+    if(!blindOperator && requiresPhotoForCount(diffMeta, task) && !photoFile){ toast("La diferencia requiere foto obligatoria antes de guardar.", "error"); return; }
+    if(!blindOperator && requiresSupportForCount(diffMeta) && !support && !obs && cause === "N/A"){ toast("Registra causa, soporte u observación para dejar trazabilidad de la diferencia.", "error"); return; }
     let photoMeta = null;
     if(photoFile){
       try{
@@ -3207,6 +3323,8 @@ async function saveCount(e){
       diffValue:diffMeta.value,
       severity:diffMeta.severity,
       recommendedAction:diffMeta.recommendation,
+      evidencePending:Boolean(blindOperator && requiresPhotoForCount(diffMeta, task)),
+      blindCount:Boolean(blindOperator),
       result:hasDiff ? "Diferencia" : "Exacto",
       cause,
       support,
@@ -3274,7 +3392,7 @@ async function saveCount(e){
         history:[historyEntry(isCable ? "metraje_exacto" : "conteo_exacto", "Pendiente aprobación jefe logístico.")]
       });
 
-      toast(isCable ? "Metraje guardado. Pendiente aprobación del jefe logístico." : "Conteo guardado. Pendiente aprobación del jefe logístico.");
+      toast(blindOperator ? "Conteo guardado. Pasa a validación interna." : (isCable ? "Metraje guardado. Pendiente aprobación del jefe logístico." : "Conteo guardado. Pendiente aprobación del jefe logístico."));
     }else{
       if(Number(task.recountRound || 0) < 1){
         const recountId = `${isCable ? "METERREC" : "REC"}-${todayISO()}-${safeId(task.materialRef)}-${Date.now()}`;
@@ -3302,7 +3420,7 @@ async function saveCount(e){
           lastComment:"Diferencia detectada. Se generó reconteo obligatorio."
         });
 
-        toast("Se detectó diferencia. Se generó reconteo obligatorio.");
+        toast(blindOperator ? "Conteo guardado. Se programó validación interna." : "Se detectó diferencia. Se generó reconteo obligatorio.");
       }else{
         await updateDoc(doc(db, "countTasks", task.id), {
           status:"pending_jefe_logistico",
@@ -3332,7 +3450,7 @@ async function saveCount(e){
           history:[historyEntry("diferencia_persistente", obs || "Diferencia persistente.")]
         });
 
-        toast("Diferencia persistente. Caso enviado al jefe logístico.");
+        toast(blindOperator ? "Conteo guardado. Caso enviado a validación del jefe logístico." : "Diferencia persistente. Caso enviado al jefe logístico.");
       }
     }
   }else if(caseId){

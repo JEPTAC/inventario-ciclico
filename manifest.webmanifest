@@ -1,7 +1,7 @@
 {
   "name": "Inventario Cíclico SIESA",
   "short_name": "Inventario SIESA",
-  "description": "Control de inventario cíclico con Conteo Express, stickers imprimibles, memoria histórica, evidencias y aprobaciones.",
+  "description": "Control de inventario cíclico con conteo simple ciego por auxiliar, stickers imprimibles, memoria histórica y aprobaciones.",
   "id": "./index.html",
   "start_url": "./index.html?source=pwa",
   "scope": "./",
@@ -36,9 +36,9 @@
   ],
   "shortcuts": [
     {
-      "name": "Conteo Express",
-      "short_name": "Express",
-      "description": "Abrir el flujo rápido de conteo por ubicación y referencia.",
+      "name": "Conteo simple",
+      "short_name": "Conteo",
+      "description": "Abrir el flujo ciego para registrar cantidad física por ubicación y referencia.",
       "url": "./index.html?view=express",
       "icons": [
         {

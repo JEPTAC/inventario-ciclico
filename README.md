@@ -1,3 +1,11 @@
+# Inventario Cíclico SIESA · V34 Conteo simple por auxiliar
+
+Esta versión simplifica el flujo del rol inventario/auxiliar. El auxiliar trabaja en conteo ciego: no ve stock del sistema, diferencia, valor inventario, riesgo ni indicadores administrativos. Solo confirma referencia, nombre, ubicación, unidad, registra la cantidad física y guarda.
+
+La impresión de stickers queda separada en Etiquetas diarias, con carga de pendientes de hoy e impresión en hoja carta de 16 stickers.
+
+---
+
 # Inventario Cíclico SIESA — V33 stickers completos y responsive automático
 
 ## Novedades V33
