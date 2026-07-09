@@ -40,14 +40,17 @@
       <div class="user-box"><span id="userRoleBadge" class="role-badge">Rol</span><b id="userName">Usuario</b><small id="userEmail">correo</small></div>
       <nav class="nav">
         <button class="nav-link active" data-view="dashboardView">Panel</button>
+        <button class="nav-link" data-view="expressView" data-roles="super_admin,inventario">Conteo Express</button>
         <button class="nav-link" data-view="usersView" data-roles="super_admin">Usuarios</button>
         <button class="nav-link" data-view="driveView" data-roles="super_admin,jefe_logistico">Drive / SIESA</button>
-        <button class="nav-link" data-view="inventoryView" data-roles="super_admin,inventario">Inventario</button>
+        <button class="nav-link" data-view="inventoryView" data-roles="super_admin,inventario">Mis pendientes</button>
+        <button class="nav-link" data-view="historyView" data-roles="super_admin,inventario">Historial</button>
         <button class="nav-link" data-view="cableView" data-roles="super_admin,inventario,jefe_logistico">Metraje cables</button>
         <button class="nav-link" data-view="jefeView" data-roles="super_admin,jefe_logistico">Jefe logístico</button>
         <button class="nav-link" data-view="auditoriaView" data-roles="super_admin,auditoria">Auditoría</button>
         <button class="nav-link" data-view="gerenciaView" data-roles="super_admin,gerencia">Gerencia</button>
         <button class="nav-link" data-view="materialsView">Materiales</button>
+        <button class="nav-link" data-view="qrLabelsView" data-roles="super_admin,jefe_logistico,inventario">Etiquetas QR</button>
         <button class="nav-link" data-view="lineCatalogView">Líneas / Cables</button>
         <button class="nav-link" data-view="indicatorsView">Indicadores</button>
         <button class="nav-link" data-view="configView" data-roles="super_admin,jefe_logistico">Configuración</button>
@@ -65,6 +68,7 @@
       </header>
 
       <section id="dashboardView" class="view active">
+        <div id="roleQuickPanel" class="role-quick-panel"></div>
         <div class="kpi-grid">
           <article class="kpi"><span>Materiales</span><b id="kpiMaterials">0</b><small>activos</small></article>
           <article class="kpi"><span>Conteo hoy</span><b id="kpiTodayTasks">0</b><small>tareas abiertas</small></article>
@@ -112,7 +116,71 @@
         </div>
       </section>
 
+
+      <section id="expressView" class="view">
+        <div class="express-hero card">
+          <div class="express-hero-main">
+            <span class="tag blue">Modo bodega</span>
+            <h3>Conteo Express</h3>
+            <p>Escanea ubicación o referencia, registra la cantidad física y pasa al siguiente material sin volver a la tabla.</p>
+            <div class="express-progress">
+              <div class="progress-track"><div id="expressProgressBar" class="progress-fill" style="width:0%"></div></div>
+              <b id="expressProgressText">0 de 0</b>
+            </div>
+          </div>
+          <div class="express-hero-kpis">
+            <div><span>Pendientes hoy</span><b id="expressPendingToday">0</b></div>
+            <div><span>Reconteos</span><b id="expressRecounts">0</b></div>
+            <div><span>Críticos</span><b id="expressRiskHigh">0</b></div>
+          </div>
+        </div>
+
+        <div class="grid express-grid">
+          <article class="card express-panel">
+            <div class="card-head">
+              <div><h3>Conteo actual</h3><p>Vista limpia para celular, tablet o portátil en bodega.</p></div>
+              <span id="expressModeTag" class="tag green">Listo</span>
+            </div>
+            <div class="express-scan-row">
+              <label>Ubicación<input id="expressLocationInput" placeholder="Escanea o escribe bodega / pasillo / estante"></label>
+              <label>Referencia<input id="expressRefInput" placeholder="Escanea o escribe referencia"></label>
+            </div>
+            <div class="button-row express-actions">
+              <button id="scanLocationBtn" class="btn secondary" type="button">Escanear ubicación</button>
+              <button id="scanRefBtn" class="btn secondary" type="button">Escanear referencia</button>
+              <button id="clearExpressFiltersBtn" class="btn ghost" type="button">Limpiar filtros</button>
+            </div>
+            <div id="expressCurrentCard" class="express-current"></div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <div><h3>Lista rápida</h3><p>Ordenada por fecha, reconteo, riesgo y valor.</p></div>
+              <select id="expressTaskTypeFilter" class="compact-select">
+                <option value="">Todas</option>
+                <option value="today">Solo hoy</option>
+                <option value="recount">Reconteos</option>
+                <option value="cable">Cables / metraje</option>
+                <option value="risk">Alto riesgo</option>
+              </select>
+            </div>
+            <div id="expressWorklist" class="express-worklist"></div>
+          </article>
+        </div>
+      </section>
+
       <section id="inventoryView" class="view"><article class="card"><div class="card-head"><div><h3>Panel inventario</h3><p>El usuario de inventario solo registra los productos obligatorios del día.</p></div><div class="filters"><input id="taskSearch" placeholder="Buscar referencia"><select id="taskFilter"><option value="">Todas</option><option value="assigned">Asignadas</option><option value="recount_required">Reconteo</option></select></div></div><div id="tasksTable"></div></article></section>
+
+      <section id="historyView" class="view">
+        <article class="card">
+          <div class="card-head">
+            <div><h3>Historial de conteos</h3><p>Consulta los conteos recientes, diferencia, evidencia, tiempo y resultado.</p></div>
+            <span class="tag blue">Trazabilidad</span>
+          </div>
+          <div id="historyTable"></div>
+        </article>
+      </section>
+
       <section id="cableView" class="view"><article class="card"><div class="card-head"><div><h3>Inventario de metraje de cables</h3><p>Referencias identificadas como cable. Se programan por sesiones de 15 días para cubrir el 100% anual.</p></div><button id="generateCableBtn2" class="btn primary" data-roles="super_admin,jefe_logistico">Generar sesión</button></div><div id="cableTasksTable"></div></article></section>
       <section id="jefeView" class="view"><article class="card"><div class="card-head"><div><h3>Panel jefe logístico</h3><p>Supervisa, verifica novedades y escala a auditoría si no puede justificar.</p></div><span class="tag yellow">Control logístico</span></div><div id="jefeCasesTable"></div></article></section>
       <section id="auditoriaView" class="view"><article class="card"><div class="card-head"><div><h3>Panel auditoría interna</h3><p>Contabiliza de forma independiente, agrega comentarios por referencia y envía informe a gerencia.</p></div><span class="tag red">Auditoría</span></div><div id="auditCasesTable"></div></article></section>
@@ -145,6 +213,34 @@
       </section>
 
 
+
+      <section id="qrLabelsView" class="view">
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head">
+              <div><h3>Generador de etiquetas QR</h3><p>Imprime etiquetas para ubicación y referencia. El QR guarda texto simple para escanear desde Conteo Express.</p></div>
+              <button id="printQrLabelsBtn" class="btn primary" type="button">Imprimir selección</button>
+            </div>
+            <div class="config-grid">
+              <label>Buscar material<input id="qrSearch" placeholder="Referencia, descripción o ubicación"></label>
+              <label>Tipo de etiqueta<select id="qrType"><option value="material">Referencia</option><option value="location">Ubicación</option></select></label>
+              <label>Cantidad máxima<input id="qrLimit" type="number" min="1" max="200" value="48"></label>
+            </div>
+            <div id="qrLabelPreview" class="qr-label-grid"></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><h3>Uso recomendado</h3><span class="tag yellow">Bodega</span></div>
+            <div class="summary-list">
+              <div class="summary-item"><span>Ubicación</span><b>Pasillo / estante / nivel</b></div>
+              <div class="summary-item"><span>Referencia</span><b>SKU o código SIESA</b></div>
+              <div class="summary-item"><span>Conteo</span><b>Escanear → contar → guardar</b></div>
+              <div class="summary-item"><span>Auditoría</span><b>QR + evidencia + historial</b></div>
+            </div>
+            <div class="notice">La generación usa una imagen QR en línea cuando hay internet. Si no carga, la etiqueta conserva el código en texto grande para digitarlo manualmente.</div>
+          </article>
+        </div>
+      </section>
+
       <section id="lineCatalogView" class="view">
         <article class="card">
           <div class="card-head">
@@ -155,11 +251,11 @@
         </article>
       </section>
 
-      <section id="configView" class="view"><div class="grid two"><article class="card"><div class="card-head"><h3>Parámetros</h3><button id="saveSettingsBtn" class="btn primary">Guardar</button></div><div class="config-grid"><label>Límite diario general<input id="setDailyLimit" type="number" min="1" max="80"></label><label>Días activos<input id="setActiveDays" placeholder="1,2,3,4,5"></label><label>Hora auto sync<input id="setAutoHour" type="number" min="0" max="23"></label><label>Hoja Excel<input id="setSheetName"></label><label>Periodo metraje cables<input id="setCablePeriod" type="number" min="1"></label><label>Maduración cable reciente<input id="setCableCooldown" type="number" min="0"></label><label>Límite por sesión cables<input id="setCableLimit" type="number" min="0"></label><label>Conteo ciego inventario<select id="setBlindCount"><option value="true">Activo</option><option value="false">Inactivo</option></select></label><label>% diferencia menor<input id="setMinorDiffPercent" type="number" step="0.1" min="0"></label><label>% diferencia crítica<input id="setCriticalDiffPercent" type="number" step="0.1" min="0"></label><label>Valor diferencia crítica<input id="setCriticalDiffValue" type="number" min="0" step="1000"></label></div><div id="bandsEditor" class="bands-editor"></div></article><article class="card"><h3>Reglas activas</h3><div class="summary-list"><div class="summary-item"><span>Frecuencias ABC</span><b>10/20/30/60/90/120</b></div><div class="summary-item"><span>Conteo diario</span><b>máximo configurable</b></div><div class="summary-item"><span>Metraje cables</span><b>módulo separado cada 15 días</b></div><div class="summary-item"><span>Selección metraje</span><b>aleatoria, sin criticidad</b></div><div class="summary-item"><span>Meta metraje</span><b>100% al 31 de diciembre</b></div><div class="summary-item"><span>Usuario con todos los módulos</span><b>super_admin</b></div></div></article></div></section>
+      <section id="configView" class="view"><div class="grid two"><article class="card"><div class="card-head"><h3>Parámetros</h3><button id="saveSettingsBtn" class="btn primary">Guardar</button></div><div class="config-grid"><label>Límite diario general<input id="setDailyLimit" type="number" min="1" max="80"></label><label>Días activos<input id="setActiveDays" placeholder="1,2,3,4,5"></label><label>Hora auto sync<input id="setAutoHour" type="number" min="0" max="23"></label><label>Hoja Excel<input id="setSheetName"></label><label>Periodo metraje cables<input id="setCablePeriod" type="number" min="1"></label><label>Maduración cable reciente<input id="setCableCooldown" type="number" min="0"></label><label>Límite por sesión cables<input id="setCableLimit" type="number" min="0"></label><label>Conteo ciego inventario<select id="setBlindCount"><option value="true">Activo</option><option value="false">Inactivo</option></select></label><label>% diferencia menor<input id="setMinorDiffPercent" type="number" step="0.1" min="0"></label><label>% diferencia crítica<input id="setCriticalDiffPercent" type="number" step="0.1" min="0"></label><label>Valor diferencia crítica<input id="setCriticalDiffValue" type="number" min="0" step="1000"></label><label>Score alto riesgo<input id="setHighRiskScore" type="number" min="0" max="100"></label><label>Foto en diferencia crítica<select id="setPhotoCritical"><option value="true">Obligatoria</option><option value="false">Opcional</option></select></label><label>Foto en cable con diferencia<select id="setPhotoCableDiff"><option value="true">Obligatoria</option><option value="false">Opcional</option></select></label><label>Soporte en diferencia media<select id="setEvidenceMedium"><option value="true">Recomendado/obligatorio</option><option value="false">Opcional</option></select></label></div><div id="bandsEditor" class="bands-editor"></div></article><article class="card"><h3>Reglas activas</h3><div class="summary-list"><div class="summary-item"><span>Frecuencias ABC</span><b>10/20/30/60/90/120</b></div><div class="summary-item"><span>Conteo diario</span><b>máximo configurable</b></div><div class="summary-item"><span>Metraje cables</span><b>módulo separado cada 15 días</b></div><div class="summary-item"><span>Selección metraje</span><b>aleatoria, sin criticidad</b></div><div class="summary-item"><span>Meta metraje</span><b>100% al 31 de diciembre</b></div><div class="summary-item"><span>Usuario con todos los módulos</span><b>super_admin</b></div></div></article></div></section>
     </section>
   </div>
 
-  <dialog id="countDialog" class="dialog"><form id="countForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="countDialogTitle">Registrar conteo</h3><p id="countDialogSubtitle"></p></div><button type="button" id="closeCountDialog" class="icon-btn">×</button></div><input type="hidden" id="countTaskId"><input type="hidden" id="countCaseId"><input type="hidden" id="countMode"><input type="hidden" id="countMaterialRef"><input type="hidden" id="countUnitCost"><div class="form-grid"><label>Fecha<input id="countDate" type="date" required></label><label id="systemQtyLabel">Stock sistema<input id="countSystemQty" type="number" step="0.001" readonly></label><label id="countQtyLabel">Cantidad contada<input id="countQty" type="number" step="0.001" required></label><label>Soporte / documento<input id="countSupport" placeholder="Foto, acta, remisión, salida, PDF"></label><label>Foto del material<input id="countPhoto" type="file" accept="image/*" capture="environment"></label><label>Causa<select id="countCause"><option>N/A</option><option>Error de ubicación</option><option>Salida no registrada</option><option>Ingreso no registrada</option><option>Error documental</option><option>Error de conteo</option><option>Merma, daño o pérdida</option><option>Unidad de medida / conversión</option></select></label><div id="countDiffPreview" class="count-preview full-span"></div><label class="full-span">Comentarios por referencia<textarea id="countObs" rows="4"></textarea></label><div class="notice compact full-span">Si cargas una foto, la app la sube a la misma carpeta de Drive y la nombra con la referencia del material y la fecha del conteo.</div></div><div class="dialog-actions"><button type="button" id="cancelCountBtn" class="btn ghost">Cancelar</button><button type="submit" class="btn primary">Guardar</button></div></form></dialog>
+  <dialog id="countDialog" class="dialog"><form id="countForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="countDialogTitle">Registrar conteo</h3><p id="countDialogSubtitle"></p></div><button type="button" id="closeCountDialog" class="icon-btn">×</button></div><input type="hidden" id="countTaskId"><input type="hidden" id="countCaseId"><input type="hidden" id="countMode"><input type="hidden" id="countMaterialRef"><input type="hidden" id="countUnitCost"><input type="hidden" id="countStartedAt"><div class="form-grid"><label>Fecha<input id="countDate" type="date" required></label><label id="systemQtyLabel">Stock sistema<input id="countSystemQty" type="number" step="0.001" readonly></label><label id="countQtyLabel">Cantidad contada<input id="countQty" type="number" step="0.001" required></label><div class="qty-pad full-span" aria-label="Botones rápidos de cantidad"><button type="button" data-qty-step="-10">-10</button><button type="button" data-qty-step="-5">-5</button><button type="button" data-qty-step="-1">-1</button><button type="button" data-qty-clear="1">Limpiar</button><button type="button" data-qty-step="1">+1</button><button type="button" data-qty-step="5">+5</button><button type="button" data-qty-step="10">+10</button><button type="button" data-qty-step="100">+100</button></div><label>Soporte / documento<input id="countSupport" placeholder="Foto, acta, remisión, salida, PDF"></label><label>Foto del material<input id="countPhoto" type="file" accept="image/*" capture="environment"></label><label>Causa<select id="countCause"><option>N/A</option><option>Error de ubicación</option><option>Salida no registrada</option><option>Ingreso no registrada</option><option>Error documental</option><option>Error de conteo</option><option>Merma, daño o pérdida</option><option>Unidad de medida / conversión</option></select></label><div id="countDiffPreview" class="count-preview full-span"></div><label class="full-span">Comentarios por referencia<textarea id="countObs" rows="4"></textarea></label><div class="notice compact full-span">Si cargas una foto, la app la sube a la misma carpeta de Drive y la nombra con la referencia del material y la fecha del conteo.</div></div><div class="dialog-actions"><button type="button" id="cancelCountBtn" class="btn ghost">Cancelar</button><button type="submit" id="saveCountBtn" class="btn primary">Guardar</button><button type="submit" id="saveNextCountBtn" class="btn blue">Guardar y siguiente</button></div></form></dialog>
 
   <dialog id="caseDialog" class="dialog"><form id="caseActionForm" method="dialog" class="dialog-card"><div class="dialog-head"><div><h3 id="caseDialogTitle">Gestionar caso</h3><p id="caseDialogSubtitle"></p></div><button type="button" id="closeCaseDialog" class="icon-btn">×</button></div><input type="hidden" id="caseId"><input type="hidden" id="caseAction"><label>Observación / justificación<textarea id="caseComment" rows="5" required placeholder="Explique decisión, soporte o acción correctiva."></textarea></label><div class="dialog-actions"><button type="button" id="cancelCaseBtn" class="btn ghost">Cancelar</button><button type="submit" class="btn primary">Confirmar</button></div></form></dialog>
 
@@ -186,6 +282,20 @@
         <div class="summary-item"><span><b>Android / Chrome</b><br>Toca “Instalar APP” o el menú ⋮ y selecciona “Instalar aplicación”.</span><b>🤖</b></div>
         <div class="summary-item"><span><b>Notificaciones</b><br>Después de instalar, entra a la app y toca “Activar alertas”.</span><b>🔔</b></div>
       </div>
+    </div>
+  </dialog>
+
+
+
+  <dialog id="scannerDialog" class="dialog">
+    <div class="dialog-card scanner-card">
+      <div class="dialog-head"><div><h3 id="scannerTitle">Escanear código</h3><p id="scannerSubtitle">Apunta la cámara al QR o código de barras.</p></div><button type="button" id="closeScannerDialog" class="icon-btn">×</button></div>
+      <video id="scannerVideo" class="scanner-video" autoplay muted playsinline></video>
+      <div class="scanner-fallback">
+        <label>Código manual<input id="manualScanValue" placeholder="Escribe o pega el código leído"></label>
+        <button id="manualScanApplyBtn" class="btn primary" type="button">Aplicar código</button>
+      </div>
+      <div id="scannerStatus" class="notice compact">Si el navegador no soporta lectura automática, usa el campo manual.</div>
     </div>
   </dialog>
 

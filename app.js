@@ -25,7 +25,8 @@ import {
   orderBy,
   limit,
   serverTimestamp,
-  arrayUnion
+  arrayUnion,
+  enableIndexedDbPersistence
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 const mainApp = initializeApp(firebaseConfig);
@@ -35,6 +36,7 @@ analyticsSupported().then(ok => { if (ok) getAnalytics(mainApp); }).catch(() => 
 const auth = getAuth(mainApp);
 const secondaryAuth = getAuth(secondaryApp);
 const db = getFirestore(mainApp);
+enableIndexedDbPersistence(db).catch(err => console.warn("Persistencia offline Firestore no disponible:", err?.code || err?.message || err));
 
 const state = {
   user: null,
@@ -57,7 +59,18 @@ const state = {
   deferredInstallPrompt: null,
   audioCtx: null,
   notificationsEnabled: localStorage.getItem("inventarioAlertsEnabled") === "1",
-  lineCatalog: { materials:{}, lines:[], totals:{}, cableLineNames:[] }
+  lineCatalog: { materials:{}, lines:[], totals:{}, cableLineNames:[] },
+  express: {
+    selectedTaskId: localStorage.getItem("expressSelectedTaskId") || "",
+    selectedLocation: "",
+    selectedRef: "",
+    scanMode: "",
+    scanStream: null,
+    scanTimer: null,
+    countStartedAt: "",
+    saveNextRequested: false
+  },
+  offlineQueue: JSON.parse(localStorage.getItem("inventarioOfflineCountQueue") || "[]")
 };
 
 function showBootError(message, err = null){
@@ -108,16 +121,19 @@ const ROLE_LABELS = {
 
 const VIEW_ACCESS = {
   dashboardView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
+  expressView: ["super_admin", "inventario"],
   usersView: ["super_admin"],
   driveView: ["super_admin", "jefe_logistico"],
   inventoryView: ["super_admin", "inventario"],
+  historyView: ["super_admin", "inventario"],
   cableView: ["super_admin", "inventario", "jefe_logistico"],
   jefeView: ["super_admin", "jefe_logistico"],
   auditoriaView: ["super_admin", "auditoria"],
   gerenciaView: ["super_admin", "gerencia"],
-  materialsView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
-  lineCatalogView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
-  indicatorsView: ["super_admin", "inventario", "jefe_logistico", "auditoria", "gerencia"],
+  materialsView: ["super_admin", "jefe_logistico", "auditoria", "gerencia"],
+  qrLabelsView: ["super_admin", "jefe_logistico"],
+  lineCatalogView: ["super_admin", "jefe_logistico"],
+  indicatorsView: ["super_admin", "jefe_logistico", "auditoria", "gerencia"],
   configView: ["super_admin", "jefe_logistico"]
 };
 
@@ -482,6 +498,17 @@ function setupEvents(){
   $("#createUserForm").addEventListener("submit", createUserFromAdmin);
   $("#refreshUsersBtn").addEventListener("click", loadAndRenderUsers);
   ["#taskSearch", "#taskFilter"].forEach(sel => $(sel).addEventListener("input", renderTasks));
+  ["#expressLocationInput", "#expressRefInput", "#expressTaskTypeFilter"].forEach(sel => $(sel)?.addEventListener("input", renderExpress));
+  $("#clearExpressFiltersBtn")?.addEventListener("click", clearExpressFilters);
+  $("#scanLocationBtn")?.addEventListener("click", () => openScanner("location"));
+  $("#scanRefBtn")?.addEventListener("click", () => openScanner("ref"));
+  $("#closeScannerDialog")?.addEventListener("click", closeScanner);
+  $("#manualScanApplyBtn")?.addEventListener("click", applyManualScanValue);
+  ["#qrSearch", "#qrType", "#qrLimit"].forEach(sel => $(sel)?.addEventListener("input", renderQrLabels));
+  $("#printQrLabelsBtn")?.addEventListener("click", printQrLabels);
+  $$('[data-qty-step]').forEach(btn => btn.addEventListener("click", () => bumpCountQty(Number(btn.dataset.qtyStep || 0))));
+  $$('[data-qty-clear]').forEach(btn => btn.addEventListener("click", clearCountQty));
+  window.addEventListener("online", flushOfflineCountQueue);
   ["#materialSearch", "#materialBandFilter", "#materialCableFilter"].forEach(sel => $(sel)?.addEventListener("input", renderMaterials));
   ["#lineSearch", "#lineCableFilter"].forEach(sel => $(sel)?.addEventListener("input", renderLineCatalog));
   $("#saveSettingsBtn").addEventListener("click", saveSettingsFromUI);
@@ -627,17 +654,21 @@ function showLogin(){
 function getInitialViewFromUrl(){
   try{
     const requested = new URLSearchParams(window.location.search).get("view") || "";
+    if(!requested && role() === "inventario") return "expressView";
     const key = requested.trim().toLowerCase();
     const viewAliases = {
       panel:"dashboardView", dashboard:"dashboardView", inicio:"dashboardView",
+      express:"expressView", rapido:"expressView", rápido:"expressView", conteoexpress:"expressView", conteo_rapido:"expressView",
       usuarios:"usersView", users:"usersView",
       drive:"driveView", siesa:"driveView",
-      inventario:"inventoryView", inventory:"inventoryView", conteo:"inventoryView",
+      inventario:"inventoryView", inventory:"inventoryView", pendientes:"inventoryView", conteo:"expressView",
+      historial:"historyView", history:"historyView",
       cables:"cableView", cable:"cableView", metraje:"cableView",
       jefe:"jefeView", logistico:"jefeView", logistica:"jefeView",
       auditoria:"auditoriaView", auditoría:"auditoriaView", audit:"auditoriaView",
       gerencia:"gerenciaView", management:"gerenciaView",
       materiales:"materialsView", materials:"materialsView",
+      etiquetas:"qrLabelsView", qr:"qrLabelsView", codigos:"qrLabelsView", códigos:"qrLabelsView",
       lineas:"lineCatalogView", líneas:"lineCatalogView", catalogo:"lineCatalogView", catálogo:"lineCatalogView",
       indicadores:"indicatorsView", indicators:"indicatorsView", kpi:"indicatorsView",
       configuracion:"configView", configuración:"configView", config:"configView"
@@ -680,14 +711,17 @@ function setView(viewId){
   $$(".nav-link").forEach(b => b.classList.toggle("active", b.dataset.view === viewId));
   const titles = {
     dashboardView:["Panel general","Estado de sincronización, tareas y casos pendientes."],
+    expressView:["Conteo Express","Flujo rápido por ubicación, referencia, cantidad física, evidencia y siguiente tarea."],
     usersView:["Usuarios","Creación y administración de roles por super admin."],
     driveView:["Drive / SIESA","Lectura del Excel diario y sincronización con Firebase."],
-    inventoryView:["Inventario","Registro operativo de conteos asignados."],
+    inventoryView:["Mis pendientes","Listado operativo de tareas asignadas."],
+    historyView:["Historial","Conteos recientes, evidencia y tiempos registrados."],
     cableView:["Metraje cables","Conteo de metros físicos en referencias de cable."],
     jefeView:["Jefe logístico","Validación de novedades y escalamiento."],
     auditoriaView:["Auditoría interna","Contabilización independiente e informe."],
     gerenciaView:["Gerencia","Revisión y aprobación final."],
     materialsView:["Materiales","Catálogo consolidado desde SIESA."],
+    qrLabelsView:["Etiquetas QR","Impresión de códigos para ubicación, referencia y conteo móvil."],
     lineCatalogView:["Líneas / Cables","Tabla base para completar nombres y clasificar metraje de cables."],
     indicatorsView:["Indicadores","Cobertura anual, calidad de conteo, diferencias, metraje y productividad."],
     configView:["Configuración","Parámetros de agenda, Pareto y metraje."]
@@ -725,15 +759,323 @@ async function resetPassword(email){
 window.toggleUser = toggleUser;
 window.resetPassword = resetPassword;
 
+
+function getOpenTaskStatuses(){
+  return ["assigned", "recount_required", "pending_inventory", "pending_jefe_approval", "pending_jefe_logistico"];
+}
+function materialByRef(ref){
+  const target = String(ref || "");
+  return state.materials.find(m => String(m.ref || "") === target) || null;
+}
+function daysSinceISO(iso){
+  if(!iso) return 365;
+  const d = diffDays(String(iso).slice(0,10), todayISO());
+  return Number.isFinite(d) ? Math.max(0, d) : 365;
+}
+function taskRiskMeta(task){
+  const m = materialByRef(task.materialRef) || {};
+  const value = Number(task.inventoryValue || m.inventoryValue || (Number(task.systemQty || m.stockSystem || 0) * Number(task.unitCost || m.unitCost || 0)) || 0);
+  const movement = Number(m.movementIndex || task.movementIndex || 0);
+  const variability = Number(m.variabilityIndex || task.variabilityIndex || 0);
+  const age = daysSinceISO(m.lastCountDate || m.lastVerifiedDate || task.lastCountDate || "");
+  const bandWeight = {"A+":22,A:18,B:14,C:10,D:6,E:3}[task.band || m.band] || 5;
+  const diffHistory = state.counts.filter(c => c.materialRef === task.materialRef && Number(c.absDiff || 0) > 0);
+  const criticalHistory = diffHistory.filter(c => c.severity === "critica" || c.severity === "crítica").length;
+  const score = Math.min(100, Math.round(
+    bandWeight +
+    Math.min(Math.log10(Math.max(value, 1)) * 7, 25) +
+    Math.min(movement * 1.4, 16) +
+    Math.min(variability / Math.max(Number(task.systemQty || m.stockSystem || 1), 1) * 10, 12) +
+    Math.min(age / 5, 18) +
+    Math.min(diffHistory.length * 6 + criticalHistory * 8, 22) +
+    (task.status === "recount_required" ? 12 : 0) +
+    ((task.taskType === "cable_metraje" || task.type === "cable_metraje") ? 4 : 0)
+  ));
+  const threshold = Number(state.settings.highRiskScoreThreshold ?? 70);
+  const cls = score >= threshold ? "red" : score >= 50 ? "yellow" : score >= 30 ? "blue" : "green";
+  const label = score >= threshold ? "Alto" : score >= 50 ? "Medio" : score >= 30 ? "Control" : "Bajo";
+  const reasons = [];
+  if(value > 0) reasons.push(`valor ${money(value)}`);
+  if(age >= 30) reasons.push(`${fmt(age)} días sin contar`);
+  if(diffHistory.length) reasons.push(`${diffHistory.length} diferencias previas`);
+  if(task.status === "recount_required") reasons.push("reconteo");
+  return { score, cls, label, reasons: reasons.join(" · ") || "control normal" };
+}
+function getExpressTasks(){
+  let rows = state.tasks.filter(t => getOpenTaskStatuses().includes(t.status));
+  if(!isSuper() && role() === "inventario") rows = rows.filter(t => ["assigned","recount_required","pending_inventory"].includes(t.status));
+  const loc = norm($("#expressLocationInput")?.value || state.express.selectedLocation || "");
+  const ref = norm($("#expressRefInput")?.value || state.express.selectedRef || "");
+  const filter = $("#expressTaskTypeFilter")?.value || "";
+  if(loc) rows = rows.filter(t => norm(t.location || "").includes(loc));
+  if(ref) rows = rows.filter(t => [t.materialRef,t.description,t.catalogLine,t.category].some(v => norm(v).includes(ref)));
+  if(filter === "today") rows = rows.filter(t => (t.scheduledDate || "") === todayISO());
+  if(filter === "recount") rows = rows.filter(t => t.status === "recount_required" || norm(t.taskType || t.type).includes("reconteo"));
+  if(filter === "cable") rows = rows.filter(t => t.taskType === "cable_metraje" || t.type === "cable_metraje");
+  if(filter === "risk") rows = rows.filter(t => taskRiskMeta(t).score >= Number(state.settings.highRiskScoreThreshold ?? 70));
+  rows = rows.map(t => ({ ...t, risk:taskRiskMeta(t) }));
+  rows.sort((a,b) => {
+    const statusA = a.status === "recount_required" ? 1 : 0;
+    const statusB = b.status === "recount_required" ? 1 : 0;
+    return statusB - statusA || String(a.scheduledDate || "").localeCompare(String(b.scheduledDate || "")) || b.risk.score - a.risk.score || Number(b.inventoryValue || 0) - Number(a.inventoryValue || 0);
+  });
+  return rows;
+}
+function renderRoleDashboard(){
+  const el = $("#roleQuickPanel");
+  if(!el) return;
+  const today = todayISO();
+  const open = state.tasks.filter(t => getOpenTaskStatuses().includes(t.status));
+  const pendingToday = open.filter(t => (t.scheduledDate || "") === today).length;
+  const criticalCases = state.cases.filter(c => c.severity === "critica" || c.severity === "crítica" || Number(c.diffValue || 0) >= Number(state.settings.criticalDiffValue || 500000)).length;
+  const diffValue = state.cases.reduce((s,c)=>s+Number(c.diffValue || 0),0);
+  const texts = {
+    inventario: { title:"Tus conteos de hoy", body:`Tienes ${fmt(pendingToday || open.length)} tareas abiertas. Entra por Conteo Express para escanear, contar y guardar sin navegar por tablas.`, action:"Iniciar conteo", view:"expressView" },
+    jefe_logistico: { title:"Control logístico", body:`Casos abiertos: ${fmt(state.cases.filter(c => ["pending_jefe_logistico","pending_jefe_approval"].includes(c.status)).length)}. Diferencias críticas: ${fmt(criticalCases)}. Valor pendiente: ${money(diffValue)}.`, action:"Revisar diferencias", view:"jefeView" },
+    auditoria: { title:"Auditoría", body:`Casos para auditoría: ${fmt(state.cases.filter(c => c.status === "pending_auditoria").length)}. Revisa evidencia, historial y conteo independiente.`, action:"Abrir auditoría", view:"auditoriaView" },
+    gerencia: { title:"Resumen para decisión", body:`Pendientes gerencia: ${fmt(state.cases.filter(c => c.status === "pending_gerencia").length)}. Valor en diferencia: ${money(diffValue)}.`, action:"Ver decisiones", view:"gerenciaView" },
+    super_admin: { title:"Vista total", body:`Materiales: ${fmt(state.materials.length)}. Tareas abiertas: ${fmt(open.length)}. Casos: ${fmt(state.cases.length)}.`, action:"Conteo Express", view:"expressView" }
+  };
+  const t = texts[role()] || texts.super_admin;
+  el.innerHTML = `<article class="role-card"><div><span class="tag blue">${esc(ROLE_LABELS[role()] || role())}</span><h3>${esc(t.title)}</h3><p>${esc(t.body)}</p></div><button class="btn primary" type="button" data-role-go="${esc(t.view)}">${esc(t.action)}</button></article>`;
+  $('[data-role-go]')?.addEventListener("click", ev => setView(ev.currentTarget.dataset.roleGo));
+}
+function expressProgressMeta(){
+  const today = todayISO();
+  const openToday = state.tasks.filter(t => getOpenTaskStatuses().includes(t.status) && (t.scheduledDate || "") === today);
+  const doneToday = state.counts.filter(c => (c.date || "") === today && (!state.user?.uid || c.countedByUid === state.user.uid));
+  const doneTaskIds = new Set(doneToday.map(c => c.taskId).filter(Boolean));
+  const total = openToday.length + doneTaskIds.size;
+  const done = doneTaskIds.size;
+  return { total, done, pct: total ? Math.round(done / total * 100) : 0 };
+}
+function renderExpress(){
+  const list = $("#expressWorklist");
+  const current = $("#expressCurrentCard");
+  if(!list || !current) return;
+  const rows = getExpressTasks();
+  const progress = expressProgressMeta();
+  $("#expressProgressBar") && ($("#expressProgressBar").style.width = `${progress.pct}%`);
+  if($("#expressProgressText")) $("#expressProgressText").textContent = `${fmt(progress.done)} de ${fmt(progress.total)} · ${progress.pct}%`;
+  if($("#expressPendingToday")) $("#expressPendingToday").textContent = fmt(state.tasks.filter(t => getOpenTaskStatuses().includes(t.status) && (t.scheduledDate || "") === todayISO()).length);
+  if($("#expressRecounts")) $("#expressRecounts").textContent = fmt(state.tasks.filter(t => t.status === "recount_required").length);
+  if($("#expressRiskHigh")) $("#expressRiskHigh").textContent = fmt(state.tasks.filter(t => taskRiskMeta(t).score >= Number(state.settings.highRiskScoreThreshold ?? 70)).length);
+
+  let selected = rows.find(t => t.id === state.express.selectedTaskId) || rows[0] || null;
+  if(selected){
+    state.express.selectedTaskId = selected.id;
+    localStorage.setItem("expressSelectedTaskId", selected.id);
+  }
+  current.innerHTML = selected ? expressTaskDetail(selected) : `<div class="empty">No hay tareas que coincidan con los filtros. Limpia búsqueda o genera el conteo diario.</div>`;
+  list.innerHTML = rows.length ? rows.slice(0,80).map(t => expressTaskMiniCard(t, selected?.id === t.id)).join("") : `<div class="empty small">Sin tareas abiertas para el filtro actual.</div>`;
+  bindExpressButtons();
+}
+function expressTaskDetail(t){
+  const risk = t.risk || taskRiskMeta(t);
+  const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje";
+  const value = Number(t.inventoryValue || Number(t.systemQty || 0) * Number(t.unitCost || 0));
+  return `<div class="express-current-card">
+    <div class="express-current-top"><span class="pill ${risk.cls}">Riesgo ${risk.label} · ${risk.score}</span>${statusPill(t.status)}</div>
+    <h2>${esc(t.materialRef || "")}</h2>
+    <p>${esc(t.description || "Sin descripción")}</p>
+    <div class="express-data-grid">
+      <div><span>Ubicación</span><b>${esc(t.location || "Sin ubicación")}</b></div>
+      <div><span>Unidad</span><b>${esc(t.unit || (isCable ? "m" : "und"))}</b></div>
+      <div><span>${isCable ? "Metros sistema" : "Stock sistema"}</span><b>${shouldBlindCount() ? "Oculto" : fmt(t.systemQty)}</b></div>
+      <div><span>Valor inventario</span><b>${money(value)}</b></div>
+      <div><span>Motivo riesgo</span><b>${esc(risk.reasons)}</b></div>
+    </div>
+    <div class="button-row express-main-actions">
+      <button class="btn primary big-action" type="button" data-express-count="${esc(t.id)}">Contar ahora</button>
+      <button class="btn secondary" type="button" data-copy-ref="${esc(t.materialRef || "")}">Copiar ref</button>
+    </div>
+  </div>`;
+}
+function expressTaskMiniCard(t, active=false){
+  const risk = t.risk || taskRiskMeta(t);
+  const isCable = t.taskType === "cable_metraje" || t.type === "cable_metraje";
+  return `<button class="express-mini-card ${active ? "active" : ""}" type="button" data-select-express="${esc(t.id)}">
+    <span class="mini-ref">${esc(t.materialRef || "")}</span>
+    <span class="mini-desc">${esc(t.description || "")}</span>
+    <span class="mini-meta">${esc(t.location || "Sin ubicación")} · ${isCable ? "Cable" : esc(t.band || "")}</span>
+    <span class="mini-footer"><b class="pill ${risk.cls}">${risk.score}</b>${statusPill(t.status)}</span>
+  </button>`;
+}
+function bindExpressButtons(){
+  $$('[data-select-express]').forEach(btn => btn.addEventListener("click", () => {
+    state.express.selectedTaskId = btn.dataset.selectExpress;
+    localStorage.setItem("expressSelectedTaskId", state.express.selectedTaskId);
+    renderExpress();
+  }));
+  $$('[data-express-count]').forEach(btn => btn.addEventListener("click", () => openTaskCountDialog(btn.dataset.expressCount)));
+  $$('[data-copy-ref]').forEach(btn => btn.addEventListener("click", async () => {
+    try{ await navigator.clipboard.writeText(btn.dataset.copyRef || ""); toast("Referencia copiada."); }catch(e){ toast(btn.dataset.copyRef || ""); }
+  }));
+}
+function clearExpressFilters(){
+  if($("#expressLocationInput")) $("#expressLocationInput").value = "";
+  if($("#expressRefInput")) $("#expressRefInput").value = "";
+  if($("#expressTaskTypeFilter")) $("#expressTaskTypeFilter").value = "";
+  state.express.selectedLocation = "";
+  state.express.selectedRef = "";
+  renderExpress();
+}
+function normalizeScanPayload(raw){
+  const value = String(raw || "").trim();
+  const upper = value.toUpperCase();
+  if(upper.startsWith("LOC:")) return { mode:"location", value:value.slice(4).trim() };
+  if(upper.startsWith("MAT:") || upper.startsWith("REF:")) return { mode:"ref", value:value.slice(4).trim() };
+  return { mode:state.express.scanMode || "ref", value };
+}
+async function openScanner(mode){
+  state.express.scanMode = mode;
+  $("#scannerTitle") && ($("#scannerTitle").textContent = mode === "location" ? "Escanear ubicación" : "Escanear referencia");
+  $("#scannerSubtitle") && ($("#scannerSubtitle").textContent = mode === "location" ? "Lee el QR de bodega, pasillo o estante." : "Lee el QR/código de barras del material.");
+  $("#manualScanValue") && ($("#manualScanValue").value = "");
+  $("#scannerDialog")?.showModal();
+  const status = $("#scannerStatus");
+  if(!navigator.mediaDevices?.getUserMedia || !("BarcodeDetector" in window)){
+    if(status) status.textContent = "Este navegador no permite lectura automática. Usa el campo manual.";
+    return;
+  }
+  try{
+    const formats = window.BarcodeDetector.getSupportedFormats ? await window.BarcodeDetector.getSupportedFormats().catch(() => []) : [];
+    const detector = new window.BarcodeDetector({ formats: formats.length ? formats : ["qr_code","code_128","code_39","ean_13"] });
+    const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" }, audio:false });
+    state.express.scanStream = stream;
+    const video = $("#scannerVideo");
+    video.srcObject = stream;
+    await video.play();
+    if(status) status.textContent = "Cámara activa. Apunta al código.";
+    state.express.scanTimer = setInterval(async () => {
+      try{
+        const codes = await detector.detect(video);
+        if(codes?.length){ applyScanValue(codes[0].rawValue || codes[0].rawValueText || ""); }
+      }catch(e){}
+    }, 700);
+  }catch(err){
+    if(status) status.textContent = "No se pudo activar la cámara. Usa ingreso manual.";
+  }
+}
+function closeScanner(){
+  clearInterval(state.express.scanTimer);
+  state.express.scanTimer = null;
+  if(state.express.scanStream){
+    state.express.scanStream.getTracks().forEach(t => t.stop());
+    state.express.scanStream = null;
+  }
+  $("#scannerDialog")?.close();
+}
+function applyManualScanValue(){ applyScanValue($("#manualScanValue")?.value || ""); }
+function applyScanValue(raw){
+  const parsed = normalizeScanPayload(raw);
+  if(!parsed.value) return;
+  if(parsed.mode === "location"){
+    if($("#expressLocationInput")) $("#expressLocationInput").value = parsed.value;
+    state.express.selectedLocation = parsed.value;
+    toast("Ubicación aplicada.");
+  }else{
+    if($("#expressRefInput")) $("#expressRefInput").value = parsed.value;
+    state.express.selectedRef = parsed.value;
+    const match = state.tasks.find(t => norm(t.materialRef) === norm(parsed.value) || norm(t.materialRef).includes(norm(parsed.value)));
+    if(match) state.express.selectedTaskId = match.id;
+    toast(match ? "Referencia encontrada." : "Referencia aplicada como filtro.");
+  }
+  closeScanner();
+  setView("expressView");
+  renderExpress();
+}
+function bumpCountQty(step){
+  const input = $("#countQty");
+  if(!input) return;
+  const current = input.value === "" ? 0 : num(input.value);
+  input.value = Number(current + Number(step || 0)).toFixed(3).replace(/\.000$/, "");
+  input.dispatchEvent(new Event("input", { bubbles:true }));
+}
+function clearCountQty(){
+  const input = $("#countQty");
+  if(input){ input.value = ""; input.dispatchEvent(new Event("input", { bubbles:true })); }
+}
+function countDurationSeconds(){
+  const start = $("#countStartedAt")?.value || state.express.countStartedAt;
+  const startMs = start ? Date.parse(start) : NaN;
+  return Number.isFinite(startMs) ? Math.max(0, Math.round((Date.now() - startMs) / 1000)) : 0;
+}
+function countContextItem(){
+  const taskId = $("#countTaskId")?.value;
+  const caseId = $("#countCaseId")?.value;
+  if(taskId) return state.tasks.find(t => t.id === taskId) || null;
+  if(caseId) return state.cases.find(c => c.id === caseId) || null;
+  return null;
+}
+function requiresPhotoForCount(meta, item){
+  const isCable = item?.taskType === "cable_metraje" || item?.type === "cable_metraje" || norm(item?.type).includes("metraje");
+  if(Number(meta.absDiff || 0) <= 0.0001) return false;
+  if((meta.severity === "critica" || meta.severity === "crítica") && state.settings.requirePhotoCritical !== false) return true;
+  if(isCable && state.settings.requirePhotoCableDiff !== false) return true;
+  return false;
+}
+function requiresSupportForCount(meta){
+  return ["media","critica","crítica"].includes(meta.severity) && state.settings.requireEvidenceMedium !== false;
+}
+function openNextExpressTask(previousTaskId=""){
+  const rows = getExpressTasks().filter(t => t.id !== previousTaskId);
+  const next = rows[0];
+  if(next){
+    state.express.selectedTaskId = next.id;
+    localStorage.setItem("expressSelectedTaskId", next.id);
+    setView("expressView");
+    setTimeout(() => openTaskCountDialog(next.id), 250);
+  }else{
+    setView("expressView");
+    toast("No quedan más tareas abiertas para el filtro actual.");
+  }
+}
+function renderQrLabels(){
+  const el = $("#qrLabelPreview");
+  if(!el) return;
+  const q = norm($("#qrSearch")?.value || "");
+  const type = $("#qrType")?.value || "material";
+  const max = Math.max(1, Math.min(200, Number($("#qrLimit")?.value || 48)));
+  let items = [];
+  if(type === "location"){
+    const locs = [...new Set(state.materials.map(m => String(m.location || "").trim()).filter(Boolean))];
+    items = locs.filter(l => !q || norm(l).includes(q)).slice(0,max).map(l => ({ label:l, data:`LOC:${l}`, sub:"Ubicación" }));
+  }else{
+    items = state.materials.filter(m => !q || [m.ref,m.description,m.location].some(v => norm(v).includes(q))).slice(0,max).map(m => ({ label:m.ref, data:`MAT:${m.ref}`, sub:m.description || m.location || "Referencia" }));
+  }
+  el.innerHTML = items.length ? items.map(qrLabelHtml).join("") : `<div class="empty small">No hay etiquetas para mostrar.</div>`;
+}
+function qrLabelHtml(item){
+  const data = encodeURIComponent(item.data);
+  return `<div class="qr-label"><img alt="QR ${esc(item.label)}" src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${data}"><b>${esc(item.label)}</b><span>${esc(item.sub || "")}</span><small>${esc(item.data)}</small></div>`;
+}
+function printQrLabels(){
+  const html = $("#qrLabelPreview")?.innerHTML || "";
+  const w = window.open("", "_blank");
+  if(!w) return toast("El navegador bloqueó la ventana de impresión.", "error");
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas QR</title><style>body{font-family:Century Gothic,Arial;margin:18px;color:#0b2d5c}.qr-label-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.qr-label{border:1px solid #ccd8e8;border-radius:14px;padding:10px;text-align:center;page-break-inside:avoid}.qr-label img{width:96px;height:96px}.qr-label b{display:block;font-size:14px;margin-top:5px}.qr-label span{display:block;font-size:10px}.qr-label small{display:block;font-size:8px;color:#64758d;margin-top:4px}@media print{body{margin:0}.qr-label{border-color:#777}}</style></head><body><div class="qr-label-grid">${html}</div><script>setTimeout(()=>print(),400)<\/script></body></html>`);
+  w.document.close();
+}
+function flushOfflineCountQueue(){
+  if(state.offlineQueue?.length){
+    toast("Conexión recuperada. Firestore sincronizará los cambios pendientes automáticamente.");
+  }
+}
+
 function renderAll(){
   renderKpis();
   renderDashboard();
+  renderRoleDashboard();
+  renderExpress();
   renderTasks();
+  renderHistory();
   renderCableTasks();
   renderCases();
   renderMaterials();
   renderSettings();
   renderLineCatalog();
+  renderQrLabels();
   renderIndicators();
   renderDriveConfig();
   if(isSuper()) renderUsers();
@@ -841,17 +1183,43 @@ function renderCableTasks(){
 }
 function taskTable(rows, cable = false){
   if(!rows.length) return `<div class="empty">No hay tareas abiertas.</div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Referencia</th><th>Descripción</th><th>Línea</th><th>Ubicación</th><th>Banda</th><th>${cable ? "Metros sistema" : "Stock"}</th><th>Costo</th><th>Valor</th><th>Tipo</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${rows.map(t => {
+  const cards = `<div class="task-card-list">${rows.map(t => {
+    const risk = taskRiskMeta(t);
+    const value = Number(t.inventoryValue || ((t.unitCost || 0) * (t.systemQty || 0)) || 0);
+    const canCount = ["assigned","recount_required","pending_inventory"].includes(t.status);
+    return `<article class="task-card">
+      <div class="task-card-top"><b>${esc(t.materialRef || "")}</b><span class="pill ${risk.cls}">Riesgo ${risk.score}</span></div>
+      <p>${esc(t.description || "")}</p>
+      <div class="task-card-meta"><span>${esc(t.location || "Sin ubicación")}</span><span>${esc(t.band || "")}</span><span>${money(value)}</span></div>
+      <div class="task-card-actions">${statusPill(t.status)}${canCount ? `<button class="tiny" data-count-task="${esc(t.id)}">Contar</button>` : ""}${t.status === "pending_jefe_approval" && hasAny(["jefe_logistico"]) ? `<button class="tiny blue" data-approve-task="${esc(t.id)}">Aprobar</button>` : ""}</div>
+    </article>`;
+  }).join("")}</div>`;
+  const table = `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Referencia</th><th>Descripción</th><th>Línea</th><th>Ubicación</th><th>Banda</th><th>${cable ? "Metros sistema" : "Stock"}</th><th>Costo</th><th>Valor</th><th>Riesgo</th><th>Tipo</th><th>Estado</th><th>Acción</th></tr></thead><tbody>${rows.map(t => {
     const cat = catalogMaterial(t.materialRef);
     const desc = t.description || cat?.description || "";
     const line = t.catalogLine || t.category || cat?.line || "";
     const value = Number(t.inventoryValue || ((t.unitCost || 0) * (t.systemQty || 0)) || 0);
-    return `<tr><td>${esc(t.scheduledDate || "")}</td><td><b>${esc(t.materialRef)}</b></td><td>${esc(desc)}</td><td>${esc(line)}</td><td>${esc(t.location || "")}</td><td><span class="pill dark">${esc(t.band || "")}</span></td><td>${fmt(t.systemQty)}</td><td>${money(t.unitCost || 0)}</td><td>${money(value)}</td><td>${esc(t.taskType || t.type || "general")}</td><td>${statusPill(t.status)}</td><td><div class="row-actions">${["assigned","recount_required","pending_inventory"].includes(t.status) ? `<button class="tiny" data-count-task="${esc(t.id)}">Registrar</button>` : ""}${t.status === "pending_jefe_approval" && hasAny(["jefe_logistico"]) ? `<button class="tiny blue" data-approve-task="${esc(t.id)}">Aprobar</button>` : ""}</div></td></tr>`;
+    const risk = taskRiskMeta(t);
+    return `<tr><td>${esc(t.scheduledDate || "")}</td><td><b>${esc(t.materialRef)}</b></td><td>${esc(desc)}</td><td>${esc(line)}</td><td>${esc(t.location || "")}</td><td><span class="pill dark">${esc(t.band || "")}</span></td><td>${shouldBlindCount() ? "Oculto" : fmt(t.systemQty)}</td><td>${money(t.unitCost || 0)}</td><td>${money(value)}</td><td><span class="pill ${risk.cls}">${risk.score}</span></td><td>${esc(t.taskType || t.type || "general")}</td><td>${statusPill(t.status)}</td><td><div class="row-actions">${["assigned","recount_required","pending_inventory"].includes(t.status) ? `<button class="tiny" data-count-task="${esc(t.id)}">Registrar</button>` : ""}${t.status === "pending_jefe_approval" && hasAny(["jefe_logistico"]) ? `<button class="tiny blue" data-approve-task="${esc(t.id)}">Aprobar</button>` : ""}</div></td></tr>`;
   }).join("")}</tbody></table></div>`;
+  return cards + table;
 }
 function bindTaskButtons(){
   $$('[data-count-task]').forEach(btn => btn.addEventListener("click", () => openTaskCountDialog(btn.dataset.countTask)));
   $$('[data-approve-task]').forEach(btn => btn.addEventListener("click", () => approveTask(btn.dataset.approveTask)));
+}
+
+
+function renderHistory(){
+  const el = $("#historyTable");
+  if(!el) return;
+  let rows = [...state.counts];
+  if(!isSuper()) rows = rows.filter(c => c.countedByUid === state.user?.uid || c.countedByEmail === state.user?.email);
+  rows = rows.slice(0,120);
+  if(!rows.length){ el.innerHTML = `<div class="empty">Aún no hay conteos recientes para mostrar.</div>`; return; }
+  const cards = `<div class="task-card-list">${rows.map(c => `<article class="task-card"><div class="task-card-top"><b>${esc(c.materialRef || "")}</b><span class="pill ${severityClass(c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto"))}">${severityLabel(c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto"))}</span></div><p>${esc(c.description || "")}</p><div class="task-card-meta"><span>${esc(c.date || "")}</span><span>Diferencia ${fmt(c.diff || 0)}</span><span>${money(c.diffValue || 0)}</span></div></article>`).join("")}</div>`;
+  const table = `<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Referencia</th><th>Descripción</th><th>Sistema</th><th>Físico</th><th>Diferencia</th><th>Valor</th><th>Severidad</th><th>Tiempo</th><th>Usuario</th></tr></thead><tbody>${rows.map(c => `<tr><td>${esc(c.date || formatDateTime(c.createdAt))}</td><td><b>${esc(c.materialRef || "")}</b></td><td>${esc(c.description || "")}</td><td>${fmt(c.systemQty || 0)}</td><td>${fmt(c.countedQty || 0)}</td><td>${fmt(c.diff || 0)}</td><td>${money(c.diffValue || 0)}</td><td><span class="pill ${severityClass(c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto"))}">${severityLabel(c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto"))}</span></td><td>${c.countDurationSeconds ? fmt(Math.round(Number(c.countDurationSeconds)/60)) + " min" : "—"}</td><td>${esc(c.countedByEmail || "")}</td></tr>`).join("")}</tbody></table></div>`;
+  el.innerHTML = cards + table;
 }
 
 function renderCases(){
@@ -913,6 +1281,10 @@ function renderSettings(){
   if($("#setMinorDiffPercent")) $("#setMinorDiffPercent").value = Number(state.settings.minorDiffPercent ?? 1);
   if($("#setCriticalDiffPercent")) $("#setCriticalDiffPercent").value = Number(state.settings.criticalDiffPercent ?? 10);
   if($("#setCriticalDiffValue")) $("#setCriticalDiffValue").value = Number(state.settings.criticalDiffValue ?? 500000);
+  if($("#setHighRiskScore")) $("#setHighRiskScore").value = Number(state.settings.highRiskScoreThreshold ?? 70);
+  if($("#setPhotoCritical")) $("#setPhotoCritical").value = state.settings.requirePhotoCritical === false ? "false" : "true";
+  if($("#setPhotoCableDiff")) $("#setPhotoCableDiff").value = state.settings.requirePhotoCableDiff === false ? "false" : "true";
+  if($("#setEvidenceMedium")) $("#setEvidenceMedium").value = state.settings.requireEvidenceMedium === false ? "false" : "true";
   $("#bandsEditor").innerHTML = state.settings.bands.map((b,i) => `<div class="band-row"><label>Banda<input data-band="${i}" data-field="key" value="${esc(b.key)}"></label><label>Descripción<input data-band="${i}" data-field="label" value="${esc(b.label)}"></label><label>Límite<input data-band="${i}" data-field="limit" type="number" step="0.0001" min="0" max="1" value="${b.limit}"></label><label>Frecuencia<input data-band="${i}" data-field="frequency" type="number" min="1" value="${b.frequency}"></label></div>`).join("");
 }
 async function saveSettingsFromUI(){
@@ -929,6 +1301,10 @@ async function saveSettingsFromUI(){
   next.minorDiffPercent = Number($("#setMinorDiffPercent")?.value || 1);
   next.criticalDiffPercent = Number($("#setCriticalDiffPercent")?.value || 10);
   next.criticalDiffValue = Number($("#setCriticalDiffValue")?.value || 500000);
+  next.highRiskScoreThreshold = Number($("#setHighRiskScore")?.value || 70);
+  next.requirePhotoCritical = $("#setPhotoCritical") ? $("#setPhotoCritical").value !== "false" : true;
+  next.requirePhotoCableDiff = $("#setPhotoCableDiff") ? $("#setPhotoCableDiff").value !== "false" : true;
+  next.requireEvidenceMedium = $("#setEvidenceMedium") ? $("#setEvidenceMedium").value !== "false" : true;
   $$('[data-band]').forEach(input => { const idx = Number(input.dataset.band), field = input.dataset.field; next.bands[idx][field] = field === "limit" || field === "frequency" ? Number(input.value) : input.value; });
   next.bands.sort((a,b) => Number(a.limit) - Number(b.limit));
   next.updatedAt = nowTS();
@@ -995,6 +1371,8 @@ function updateCountPreview(){
   const unitCost = num($("#countUnitCost")?.value || 0);
   const diff = countedQty - systemQty;
   const meta = buildDiffMeta(diff, systemQty, unitCost);
+  const item = countContextItem();
+  const evidenceNote = requiresPhotoForCount(meta, item) ? " Foto obligatoria por severidad o metraje." : (requiresSupportForCount(meta) ? " Registre soporte, causa u observación para cerrar trazabilidad." : "");
   el.innerHTML = `
     <div class="count-preview-row">
       <span>Diferencia</span><b>${fmt(diff)}</b>
@@ -1002,7 +1380,7 @@ function updateCountPreview(){
       <span>Impacto</span><b>${money(meta.value)}</b>
       <span>Semáforo</span><b><span class="pill ${severityClass(meta.severity)}">${severityLabel(meta.severity)}</span></b>
     </div>
-    <div class="count-preview-note">${esc(meta.recommendation)}${shouldBlindCount() ? " El stock de sistema está oculto para evitar sesgo en el conteo." : ""}</div>`;
+    <div class="count-preview-note">${esc(meta.recommendation)}${esc(evidenceNote)}${shouldBlindCount() ? " El stock de sistema está oculto para evitar sesgo en el conteo." : ""}</div>`;
 }
 function causeParetoRows(counts){
   const map = new Map();
@@ -1017,6 +1395,42 @@ function causeParetoRows(counts){
   return [...map.values()].sort((a,b) => b.qty - a.qty || b.value - a.value).slice(0, 6);
 }
 
+
+function heatMapRows(counts){
+  const map = new Map();
+  counts.filter(c => Number(c.absDiff || 0) > 0).forEach(c => {
+    const key = c.location || "Sin ubicación";
+    const value = Number(c.diffValue || 0) || Math.abs(Number(c.diff || 0)) * Number(c.unitCost || 0);
+    const current = map.get(key) || { location:key, qty:0, value:0 };
+    current.qty += 1;
+    current.value += value;
+    map.set(key, current);
+  });
+  return [...map.values()].sort((a,b) => b.value - a.value || b.qty - a.qty).slice(0, 6);
+}
+function repeatedDifferenceRows(counts){
+  const map = new Map();
+  counts.filter(c => Number(c.absDiff || 0) > 0).forEach(c => {
+    const key = c.materialRef || "Sin referencia";
+    const value = Number(c.diffValue || 0) || Math.abs(Number(c.diff || 0)) * Number(c.unitCost || 0);
+    const current = map.get(key) || { ref:key, qty:0, value:0 };
+    current.qty += 1;
+    current.value += value;
+    map.set(key, current);
+  });
+  return [...map.values()].filter(r => r.qty > 1).sort((a,b) => b.qty - a.qty || b.value - a.value).slice(0, 6);
+}
+function productivityRows(counts){
+  const map = new Map();
+  counts.filter(c => Number(c.countDurationSeconds || 0) > 0).forEach(c => {
+    const key = c.countedByEmail || "Sin usuario";
+    const current = map.get(key) || { user:key, qty:0, seconds:0 };
+    current.qty += 1;
+    current.seconds += Number(c.countDurationSeconds || 0);
+    map.set(key, current);
+  });
+  return [...map.values()].map(r => ({ ...r, avg:r.qty ? Math.round(r.seconds / r.qty) : 0 })).sort((a,b) => b.qty - a.qty).slice(0, 6);
+}
 
 function renderIndicators(){
   const cov = $("#coverageIndicators");
@@ -1077,8 +1491,14 @@ function renderIndicators(){
       sev,
       qty:state.counts.filter(c => (c.severity || (Number(c.absDiff||0)>0 ? "media" : "exacto")) === sev).length
     }));
+    const heatRows = heatMapRows(state.counts);
+    const repeatRows = repeatedDifferenceRows(state.counts);
+    const prodRows = productivityRows(state.counts);
     pareto.innerHTML = `
       <div class="mini-table"><h4>Causas más repetidas</h4>${causeRows.length ? causeRows.map(r => `<div class="mini-row"><span>${esc(r.cause)}</span><b>${fmt(r.qty)}</b><small>${money(r.value)}</small></div>`).join("") : `<div class="empty small">Aún no hay diferencias recientes.</div>`}</div>
+      <div class="mini-table"><h4>Mapa de calor por ubicación</h4>${heatRows.length ? heatRows.map(r => `<div class="mini-row"><span>${esc(r.location)}</span><b>${fmt(r.qty)}</b><small>${money(r.value)}</small></div>`).join("") : `<div class="empty small">Sin ubicaciones con diferencia.</div>`}</div>
+      <div class="mini-table"><h4>Referencias repetidas</h4>${repeatRows.length ? repeatRows.map(r => `<div class="mini-row"><span>${esc(r.ref)}</span><b>${fmt(r.qty)}</b><small>${money(r.value)}</small></div>`).join("") : `<div class="empty small">No hay repetición reciente.</div>`}</div>
+      <div class="mini-table"><h4>Productividad de conteo</h4>${prodRows.length ? prodRows.map(r => `<div class="mini-row"><span>${esc(r.user)}</span><b>${fmt(r.qty)}</b><small>${fmt(Math.round(r.avg/60))} min prom.</small></div>`).join("") : `<div class="empty small">Aún no hay tiempos registrados.</div>`}</div>
       <div class="mini-table"><h4>Semáforo de conteos</h4>${severityRows.map(r => `<div class="mini-row"><span><span class="pill ${severityClass(r.sev)}">${severityLabel(r.sev)}</span></span><b>${fmt(r.qty)}</b><small>conteos</small></div>`).join("")}</div>
     `;
   }
@@ -1793,12 +2213,16 @@ async function generateCableTasks(showToast = true){
 function openTaskCountDialog(taskId){
   const task = state.tasks.find(t => t.id === taskId);
   if(!task) return;
+  state.express.selectedTaskId = taskId;
+  localStorage.setItem("expressSelectedTaskId", taskId);
+  state.express.countStartedAt = new Date().toISOString();
   const cable = task.taskType === "cable_metraje";
   $("#countTaskId").value = task.id;
   $("#countCaseId").value = "";
   $("#countMode").value = "task";
   $("#countMaterialRef").value = task.materialRef;
   $("#countDate").value = todayISO();
+  if($("#countStartedAt")) $("#countStartedAt").value = state.express.countStartedAt;
   $("#countSystemQty").value = Number(task.systemQty || 0);
   $("#countQty").value = shouldBlindCount() ? "" : Number(task.systemQty || 0);
   if($("#countUnitCost")) $("#countUnitCost").value = Number(task.unitCost || 0);
@@ -1816,11 +2240,13 @@ function openCaseCountDialog(caseId, mode){
   if(!c) return;
   if(mode === "jefe" && !hasAny(["jefe_logistico"])) return toast("No tienes permiso.", "error");
   if(mode === "auditoria" && !hasAny(["auditoria"])) return toast("No tienes permiso.", "error");
+  state.express.countStartedAt = new Date().toISOString();
   $("#countTaskId").value = "";
   $("#countCaseId").value = c.id;
   $("#countMode").value = mode;
   $("#countMaterialRef").value = c.materialRef;
   $("#countDate").value = todayISO();
+  if($("#countStartedAt")) $("#countStartedAt").value = state.express.countStartedAt;
   $("#countSystemQty").value = Number(c.systemQty ?? c.lastSystemQty ?? 0);
   $("#countQty").value = Number(c.systemQty ?? c.lastSystemQty ?? 0);
   if($("#countUnitCost")) $("#countUnitCost").value = Number(c.unitCost || 0);
@@ -1965,6 +2391,8 @@ async function saveCount(e){
     return;
   }
 
+  const saveAndNext = e.submitter?.id === "saveNextCountBtn";
+  state.express.saveNextRequested = saveAndNext;
   const taskId = $("#countTaskId").value;
   const caseId = $("#countCaseId").value;
   const mode = $("#countMode").value || "task";
@@ -1989,6 +2417,8 @@ async function saveCount(e){
     const task = { id:taskSnap.id, ...taskSnap.data() };
     const diffMeta = buildDiffMeta(diff, systemQty, Number(task.unitCost || 0));
     const isCable = task.taskType === "cable_metraje" || task.type === "cable_metraje";
+    if(requiresPhotoForCount(diffMeta, task) && !photoFile){ toast("La diferencia requiere foto obligatoria antes de guardar.", "error"); return; }
+    if(requiresSupportForCount(diffMeta) && !support && !obs && cause === "N/A"){ toast("Registra causa, soporte u observación para dejar trazabilidad de la diferencia.", "error"); return; }
     let photoMeta = null;
     if(photoFile){
       try{
@@ -2029,6 +2459,8 @@ async function saveCount(e){
       countedByUid:state.user.uid,
       countedByEmail:state.user.email,
       countedByRole:role(),
+      countStartedAt:$("#countStartedAt")?.value || "",
+      countDurationSeconds:countDurationSeconds(),
       createdAt:nowTS()
     });
 
@@ -2132,6 +2564,8 @@ async function saveCount(e){
 
     const c = { id:caseSnap.id, ...caseSnap.data() };
     const diffMeta = buildDiffMeta(diff, systemQty, Number(c.unitCost || 0));
+    if(requiresPhotoForCount(diffMeta, c) && !photoFile){ toast("La diferencia requiere foto obligatoria antes de guardar.", "error"); return; }
+    if(requiresSupportForCount(diffMeta) && !support && !obs && cause === "N/A"){ toast("Registra causa, soporte u observación para dejar trazabilidad de la diferencia.", "error"); return; }
     let photoMeta = null;
     if(photoFile){
       try{
@@ -2170,6 +2604,8 @@ async function saveCount(e){
       countedByUid:state.user.uid,
       countedByEmail:state.user.email,
       countedByRole:role(),
+      countStartedAt:$("#countStartedAt")?.value || "",
+      countDurationSeconds:countDurationSeconds(),
       createdAt:nowTS()
     });
 
@@ -2196,6 +2632,7 @@ async function saveCount(e){
 
   $("#countDialog").close();
   await refreshAll();
+  if(saveAndNext) openNextExpressTask(taskId);
 }
 
 

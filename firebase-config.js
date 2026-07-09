@@ -43,6 +43,12 @@ export const defaultSettings = {
   minorDiffPercent: 1,
   criticalDiffPercent: 10,
   criticalDiffValue: 500000,
+  highRiskScoreThreshold: 70,
+  requirePhotoCritical: true,
+  requirePhotoCableDiff: true,
+  requireEvidenceMedium: true,
+  expressAutoAdvance: true,
+  offlineQueueEnabled: true,
   cableKeywords: [
     "cable", "conductor", "alambre", "encauchetado", "thhn", "awg",
     "cobre", "aluminio", "calibre", "duplex", "triplex", "caucho"
