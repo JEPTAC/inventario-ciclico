@@ -46,6 +46,8 @@ const state = {
   driveTokenClient: null,
   driveTokenExpiresAt: 0,
   driveAuthPromise: null,
+  localExcelFile: null,
+  localExcelMeta: null,
   syncRunning: false,
   users: [],
   materials: [],
@@ -54,6 +56,8 @@ const state = {
   syncLogs: [],
   counts: [],
   referenceMemory: [],
+  referenceMemoryV2: [],
+  historyControl: null,
   cableSession: null,
   activeView: "dashboardView",
   autoTimer: null,
@@ -140,17 +144,22 @@ const VIEW_ACCESS = {
 };
 
 const aliases = {
-  ref:["referencia","material","codigo","código","codigomaterial","codigo material","articulo","artículo","sku","ref"],
-  desc:["descripcion","descripción","desc item","desc. item","descitem","texto breve","nombre","producto","denominacion","denominación","detalle","descripcion item","descripción item","nombre material","nombre item","nom item","descripcion larga","descripción larga","item","desc"],
-  category:["categoria","categoría","grupo","familia","linea","línea","clase"],
-  location:["ubicacion","ubicación","almacen","almacén","bodega","localizacion","localización","posicion","posición","estante"],
-  unit:["unidad","um","umb","unidad medida","unidad de medida"],
-  stock:["stock","existencia","existencias","cantidad","saldo","disponible","libre utilizacion","libre utilización","inventario"],
-  cost:["costo","costo unitario","valor unitario","valor unidad","precio","precio unitario","vlr unitario","costounitario","valorunitario","costopromedio","costo promedio"],
-  totalValue:["valor total","costo total","valor inventario","vlr total","valor parcial","valor existencia","valor stock","total"],
-  lastMove:["fecha movimiento","fecha ultimo movimiento","fecha último movimiento","fecha ingreso","fecha salida"],
-  movement:["salidas","salida","movimiento","consumo","demanda","rotacion","rotación"]
+  ref:["referencia item","referencia","material","codigo","código","codigomaterial","codigo material","articulo","artículo","sku","ref"],
+  desc:["nombre item","descripcion","descripción","desc item","desc. item","descitem","texto breve","nombre","producto","denominacion","denominación","detalle","descripcion item","descripción item","nombre material","nom item","descripcion larga","descripción larga","item","desc"],
+  category:["desc_item1 item","desc_item2 item","desc_item3 item","desc_item4 item","desc_item5 item","categoria","categoría","grupo","familia","linea","línea","clase"],
+  location:["ubicacion","ubicación","nombre ubicacion","nombre ubicación","almacen","almacén","bodega","localizacion","localización","posicion","posición","estante"],
+  unit:["unidad_inventario item","unidad inventario","unidad","um","umb","unidad medida","unidad de medida"],
+  stock:["cantidad_existencia_1","cantidad existencia","existencia","existencias","stock","cantidad","saldo","disponible","libre utilizacion","libre utilización","inventario"],
+  cost:["costo_prom_uni","costo prom uni","costo promedio unitario","costo","costo unitario","valor unitario","valor unidad","precio","precio unitario","vlr unitario","costounitario","valorunitario","costopromedio","costo promedio"],
+  totalValue:["costo_prom_tot","ultimo_costo_tot","valor total","costo total","valor inventario","vlr total","valor parcial","valor existencia","valor stock","total"],
+  lastMove:["fecha_ult_salida","fecha_ult_entrada","fecha_ult_venta","fecha_ult_compra","fecha movimiento","fecha ultimo movimiento","fecha último movimiento","fecha ingreso","fecha salida"],
+  movement:["consumo_promedio","fecha_ult_consumo_prom","abc_rotacion_veces","salidas","salida","movimiento","consumo","demanda","rotacion","rotación"]
 };
+
+const INVENTORY_HISTORY_VERSION = "local_excel_v2";
+const INVENTORY_HISTORY_COLLECTION = "referenceMemoryV2";
+const INVENTORY_HISTORY_CONTROL_DOC = "inventoryHistoryControl";
+
 
 function todayISO(){
   const d = new Date();
@@ -341,6 +350,9 @@ function meterFieldName(){
   return `meterCounted_${yearOf(todayISO())}`;
 }
 function wasCountedThisYear(material){
+  if(material?.resetCountingCycle === true && material?.countCycleDate === todayISO()){
+    return material[annualFieldName()] === true;
+  }
   return material[annualFieldName()] === true || String(material.lastCountDate || "").startsWith(String(yearOf(todayISO())));
 }
 function wasMeterCountedThisYear(material){
@@ -507,10 +519,11 @@ function setupEvents(){
   });
   $("#logoutBtn").addEventListener("click", () => signOut(auth));
   $$(".nav-link").forEach(btn => btn.addEventListener("click", () => setView(btn.dataset.view)));
-  $("#connectDriveBtn").addEventListener("click", () => connectDrive(true));
-  $("#connectDriveBtn2").addEventListener("click", () => connectDrive(true));
-  $("#quickSyncBtn").addEventListener("click", () => syncFromDrive(false));
-  $("#syncDriveBtn").addEventListener("click", () => syncFromDrive(false));
+  $("#connectDriveBtn")?.addEventListener("click", () => selectSiesaFile());
+  $("#connectDriveBtn2")?.addEventListener("click", () => selectSiesaFile());
+  $("#quickSyncBtn")?.addEventListener("click", () => { setView("driveView"); selectSiesaFile(); });
+  $("#syncDriveBtn")?.addEventListener("click", () => syncFromLocalExcel(false));
+  $("#siesaFileInput")?.addEventListener("change", handleSiesaFileSelected);
   $("#generateTodayBtn").addEventListener("click", () => forceMandatoryDailyTasks(true));
   $("#generateCableBtn").addEventListener("click", () => forceCableMeterTasks(true));
   $("#generateCableBtn2").addEventListener("click", () => forceCableMeterTasks(true));
@@ -668,17 +681,132 @@ function taskLabel(item = {}){
   return `${meta.ref}${meta.description ? " · " + meta.description : ""}`;
 }
 
+function defaultInventoryHistoryControl(){
+  return {
+    mode:"draft",
+    historyStatus:"draft",
+    methodVersion:INVENTORY_HISTORY_VERSION,
+    draftStartedDate:todayISO(),
+    officialStartedDate:"",
+    isPersisted:false,
+    updatedAtLocal:new Date().toISOString()
+  };
+}
+function normalizeInventoryHistoryControl(data = {}){
+  const mode = data.mode === "official" ? "official" : "draft";
+  return {
+    ...defaultInventoryHistoryControl(),
+    ...data,
+    mode,
+    historyStatus:mode === "official" ? "official" : "draft",
+    methodVersion:data.methodVersion || INVENTORY_HISTORY_VERSION,
+    draftStartedDate:data.draftStartedDate || data.startedDate || todayISO(),
+    officialStartedDate:mode === "official" ? (data.officialStartedDate || data.startedDate || todayISO()) : (data.officialStartedDate || ""),
+    isPersisted:data.isPersisted === true
+  };
+}
+function currentHistoryControl(){
+  state.historyControl = normalizeInventoryHistoryControl(state.historyControl || {});
+  return state.historyControl;
+}
+function isOfficialHistoryActive(control = currentHistoryControl()){
+  return control.mode === "official" && Boolean(control.officialStartedDate);
+}
+function historyStartDate(control = currentHistoryControl()){
+  return isOfficialHistoryActive(control) ? control.officialStartedDate : control.draftStartedDate;
+}
+function isReferenceMemoryV2(memory = {}){
+  return memory.methodVersion === INVENTORY_HISTORY_VERSION || memory.historyCollection === INVENTORY_HISTORY_COLLECTION || memory.historyOrigin === "local_excel_upload";
+}
+function isRelevantHistoryMemory(memory = {}, control = currentHistoryControl()){
+  const date = String(memory.lastCountDate || memory.lastVerifiedDate || "").slice(0,10);
+  if(!date) return false;
+  const start = historyStartDate(control);
+  if(start && date < start) return false;
+  if(memory.methodVersion && memory.methodVersion !== INVENTORY_HISTORY_VERSION) return false;
+  return true;
+}
+async function loadInventoryHistoryControl(){
+  try{
+    const snap = await getDoc(doc(db, "syncState", INVENTORY_HISTORY_CONTROL_DOC));
+    state.historyControl = normalizeInventoryHistoryControl(snap.exists() ? { ...snap.data(), isPersisted:true } : { isPersisted:false });
+  }catch(err){
+    console.warn("No se pudo leer control de histórico nuevo", err);
+    state.historyControl = defaultInventoryHistoryControl();
+  }
+  return state.historyControl;
+}
+async function ensureInventoryHistoryControl(){
+  let control = state.historyControl ? normalizeInventoryHistoryControl(state.historyControl) : null;
+  if(!control || control.isPersisted !== true){
+    try{
+      const ref = doc(db, "syncState", INVENTORY_HISTORY_CONTROL_DOC);
+      const snap = await getDoc(ref);
+      if(snap.exists()){
+        control = normalizeInventoryHistoryControl({ ...snap.data(), isPersisted:true });
+      }else{
+        control = defaultInventoryHistoryControl();
+        await setDoc(ref, {
+          ...control,
+          isPersisted:true,
+          createdAt:nowTS(),
+          createdByUid:state.user?.uid || "",
+          createdByEmail:state.user?.email || "",
+          updatedAt:nowTS()
+        }, { merge:true });
+        control = normalizeInventoryHistoryControl({ ...control, isPersisted:true });
+      }
+    }catch(err){
+      console.warn("No se pudo crear control de histórico nuevo. Se usará modo borrador local.", err);
+      control = defaultInventoryHistoryControl();
+    }
+  }
+  state.historyControl = control;
+  return control;
+}
+async function loadReferenceMemoryV2Map(control = currentHistoryControl()){
+  try{
+    const snap = await getDocs(query(collection(db, INVENTORY_HISTORY_COLLECTION), limit(8000)));
+    state.referenceMemoryV2 = snap.docs.map(d => ({ id:d.id, ...d.data(), historyCollection:INVENTORY_HISTORY_COLLECTION }));
+  }catch(err){
+    console.warn("No se pudo leer referenceMemoryV2. La app continuará sin histórico nuevo.", err);
+    state.referenceMemoryV2 = [];
+  }
+  const map = new Map();
+  state.referenceMemoryV2
+    .filter(m => isRelevantHistoryMemory(m, control))
+    .forEach(m => {
+      const k = norm(m.ref || m.materialRef || m.id || "");
+      if(k) map.set(k, m);
+    });
+  return map;
+}
+function memoryV2ByRef(ref){
+  const key = norm(ref);
+  return state.referenceMemoryV2.find(m => norm(m.ref || m.materialRef) === key || norm(m.ref || m.materialRef).replace(/^0+/, "") === key.replace(/^0+/, "")) || null;
+}
+function preferredMemoryForMaterial(material, legacyMap, v2Map, control = currentHistoryControl()){
+  const key = norm(material.ref || material.materialRef || "");
+  const keyNoZero = key.replace(/^0+/, "");
+  const v2 = v2Map?.get(key) || state.referenceMemoryV2.find(m => norm(m.ref || m.materialRef).replace(/^0+/, "") === keyNoZero);
+  if(v2 && isRelevantHistoryMemory(v2, control)) return v2;
+  if(material?.resetCountingCycle === true) return null;
+  return legacyMap?.get(key) || state.referenceMemory.find(m => norm(m.ref || m.materialRef).replace(/^0+/, "") === keyNoZero) || null;
+}
+
 function memoryByRef(ref){
   const key = norm(ref);
   return state.referenceMemory.find(m => norm(m.ref || m.materialRef) === key || norm(m.ref || m.materialRef).replace(/^0+/, "") === key.replace(/^0+/, "")) || null;
 }
 function mergeReferenceMemory(material, memory){
   if(!memory) return material;
+  const cycleReset = material?.resetCountingCycle === true && material?.countCycleDate === todayISO();
+  const allowHistoryInReset = isReferenceMemoryV2(memory);
   return {
     ...material,
     referenceCode: material.referenceCode || memory.referenceCode || inventoryCode("material", material.ref),
-    lastCountDate: material.lastCountDate || memory.lastCountDate || "",
-    lastVerifiedDate: material.lastVerifiedDate || memory.lastVerifiedDate || memory.lastCountDate || "",
+    lastCountDate: cycleReset && !allowHistoryInReset ? (material.lastCountDate || "") : (material.lastCountDate || memory.lastCountDate || ""),
+    lastVerifiedDate: cycleReset && !allowHistoryInReset ? (material.lastVerifiedDate || "") : (material.lastVerifiedDate || memory.lastVerifiedDate || memory.lastCountDate || ""),
     lastCableCountDate: material.lastCableCountDate || memory.lastCableCountDate || "",
     lastMeterCountDate: material.lastMeterCountDate || memory.lastMeterCountDate || "",
     lastCountedQty: memory.lastCountedQty ?? material.lastCountedQty ?? null,
@@ -691,12 +819,16 @@ function mergeReferenceMemory(material, memory){
     lastCountedBy: memory.lastCountedBy || material.lastCountedBy || "",
     lastCountDurationSeconds: memory.lastDurationSeconds ?? material.lastCountDurationSeconds ?? 0,
     memoryUpdatedAt: memory.updatedAt || material.memoryUpdatedAt || "",
-    memorySource: memory.source || material.memorySource || "referenceMemory"
+    memorySource: memory.source || material.memorySource || (allowHistoryInReset ? INVENTORY_HISTORY_COLLECTION : "referenceMemory"),
+    historyMode:memory.historyMode || material.historyMode || currentHistoryControl().mode,
+    historyStatus:memory.historyStatus || material.historyStatus || currentHistoryControl().historyStatus,
+    historyVersion:memory.methodVersion || material.historyVersion || INVENTORY_HISTORY_VERSION
   };
 }
 
 async function refreshAll(){
   state.initWarnings = [];
+  await safeLoad("syncState/inventoryHistoryControl", loadInventoryHistoryControl);
   await safeLoad("materials", loadMaterials);
   await safeLoad("countTasks", loadTasks);
   await safeLoad("cases", loadCases);
@@ -718,16 +850,18 @@ async function refreshAll(){
 async function loadMaterials(){
   const snap = await getDocs(query(collection(db, "materials"), limit(7000)));
   const materials = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+  const control = state.historyControl || await loadInventoryHistoryControl();
+  const v2Map = await loadReferenceMemoryV2Map(control);
+  let legacyMap = new Map();
   try{
     const memSnap = await getDocs(query(collection(db, "referenceMemory"), limit(8000)));
     state.referenceMemory = memSnap.docs.map(d => ({ id:d.id, ...d.data() }));
-    const memMap = new Map(state.referenceMemory.map(m => [norm(m.ref || m.materialRef), m]));
-    state.materials = materials.map(m => mergeReferenceMemory(m, memMap.get(norm(m.ref))));
+    legacyMap = new Map(state.referenceMemory.map(m => [norm(m.ref || m.materialRef), m]));
   }catch(err){
-    console.warn("No se pudo leer referenceMemory. La app continuará solo con materials.", err);
+    console.warn("No se pudo leer referenceMemory antiguo. La app continuará con materials e histórico nuevo.", err);
     state.referenceMemory = [];
-    state.materials = materials;
   }
+  state.materials = materials.map(m => mergeReferenceMemory(m, preferredMemoryForMaterial(m, legacyMap, v2Map, control)));
 }
 async function loadTasks(){
   const snap = await getDocs(query(collection(db, "countTasks"), where("status", "in", ["assigned", "recount_required", "pending_inventory", "pending_jefe_approval", "pending_jefe_logistico"]), limit(900)));
@@ -825,7 +959,7 @@ function setView(viewId){
     dashboardView:["Panel general","Estado de sincronización, tareas y casos pendientes."],
     expressView:[role() === "inventario" ? "Conteo simple" : "Conteo Express", role() === "inventario" ? "Registra únicamente la cantidad física. El stock del sistema queda oculto para un conteo ciego y transparente." : "Flujo rápido por ubicación, referencia, cantidad física, evidencia y siguiente tarea."],
     usersView:["Usuarios","Creación y administración de roles por super admin."],
-    driveView:["Drive / SIESA","Lectura del Excel diario y sincronización con Firebase."],
+    driveView:["Carga diaria SIESA","Sube el Excel del día, reinicia la base operativa y genera el conteo obligatorio."],
     inventoryView:["Mis pendientes","Listado operativo de tareas asignadas."],
     historyView:["Historial","Conteos recientes, evidencia y tiempos registrados."],
     cableView:["Metraje cables","Conteo de metros físicos en referencias de cable."],
@@ -1188,27 +1322,52 @@ async function openScanner(mode){
   $("#manualScanValue") && ($("#manualScanValue").value = "");
   $("#scannerDialog")?.showModal();
   const status = $("#scannerStatus");
-  if(!navigator.mediaDevices?.getUserMedia || !("BarcodeDetector" in window)){
-    if(status) status.textContent = "Este navegador no permite lectura automática. Usa el campo manual.";
+  if(!navigator.mediaDevices?.getUserMedia){
+    if(status) status.textContent = "Este navegador no permite cámara. Usa el campo manual.";
     return;
   }
   try{
-    const formats = window.BarcodeDetector.getSupportedFormats ? await window.BarcodeDetector.getSupportedFormats().catch(() => []) : [];
-    const detector = new window.BarcodeDetector({ formats: formats.length ? formats : ["qr_code","code_128","code_39","ean_13"] });
-    const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" }, audio:false });
+    const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:"environment" }, width:{ ideal:1280 }, height:{ ideal:720 } }, audio:false });
     state.express.scanStream = stream;
     const video = $("#scannerVideo");
+    video.setAttribute("playsinline", "true");
     video.srcObject = stream;
     await video.play();
-    if(status) status.textContent = "Cámara activa. Apunta al código.";
-    state.express.scanTimer = setInterval(async () => {
-      try{
-        const codes = await detector.detect(video);
-        if(codes?.length){ applyScanValue(codes[0].rawValue || codes[0].rawValueText || ""); }
-      }catch(e){}
-    }, 700);
+
+    if("BarcodeDetector" in window){
+      const formats = window.BarcodeDetector.getSupportedFormats ? await window.BarcodeDetector.getSupportedFormats().catch(() => []) : [];
+      const detector = new window.BarcodeDetector({ formats: formats.length ? formats : ["qr_code","code_128","code_39","ean_13"] });
+      if(status) status.textContent = "Cámara activa. Apunta al QR o código de barras.";
+      state.express.scanTimer = setInterval(async () => {
+        try{
+          const codes = await detector.detect(video);
+          if(codes?.length){ applyScanValue(codes[0].rawValue || codes[0].rawValueText || ""); }
+        }catch(e){}
+      }, 500);
+      return;
+    }
+
+    if(window.jsQR){
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d", { willReadFrequently:true });
+      if(status) status.textContent = "Cámara activa en modo iPhone. Lee QR; si es código de barras, usa ingreso manual.";
+      state.express.scanTimer = setInterval(() => {
+        try{
+          if(!video.videoWidth || !video.videoHeight) return;
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const qr = window.jsQR(img.data, img.width, img.height, { inversionAttempts:"attemptBoth" });
+          if(qr?.data) applyScanValue(qr.data);
+        }catch(e){}
+      }, 500);
+      return;
+    }
+
+    if(status) status.textContent = "Cámara activa, pero este navegador no trae lector QR. Usa ingreso manual.";
   }catch(err){
-    if(status) status.textContent = "No se pudo activar la cámara. Usa ingreso manual.";
+    if(status) status.textContent = "No se pudo activar la cámara. Revisa permisos o usa ingreso manual.";
   }
 }
 function closeScanner(){
@@ -1601,6 +1760,11 @@ function referenceMemoryFromCount(payload = {}){
     [annualFieldName()]:true,
     ...(taskType === "cable_metraje" ? { [meterFieldName()]:true, lastCableCountDate:date, lastMeterCountDate:date } : {}),
     source:payload.source || "count_saved",
+    methodVersion:INVENTORY_HISTORY_VERSION,
+    historyCollection:INVENTORY_HISTORY_COLLECTION,
+    historyMode:currentHistoryControl().mode,
+    historyStatus:currentHistoryControl().historyStatus,
+    historyStartDate:historyStartDate(currentHistoryControl()),
     updatedAt:nowTS()
   };
 }
@@ -1608,9 +1772,29 @@ async function persistReferenceMemoryFromCount(payload = {}){
   const ref = payload.materialRef || payload.ref || "";
   if(!ref) return;
   try{
-    const current = memoryByRef(ref) || {};
-    const data = referenceMemoryFromCount({ ...payload, previousCountTimes:Number(current.countTimes || 0) });
-    await setDoc(doc(db, "referenceMemory", referenceMemoryDocId(ref)), { ...current, ...data }, { merge:true });
+    const control = await ensureInventoryHistoryControl();
+    const currentV2 = memoryV2ByRef(ref) || {};
+    const currentLegacy = memoryByRef(ref) || {};
+    const data = {
+      ...referenceMemoryFromCount({ ...payload, previousCountTimes:Number(currentV2.countTimes || 0) }),
+      methodVersion:INVENTORY_HISTORY_VERSION,
+      historyCollection:INVENTORY_HISTORY_COLLECTION,
+      historyMode:control.mode,
+      historyStatus:control.historyStatus,
+      historyStartDate:historyStartDate(control),
+      officialStartedDate:control.officialStartedDate || "",
+      draftStartedDate:control.draftStartedDate || "",
+      historyOrigin:"local_excel_upload"
+    };
+
+    await setDoc(doc(db, INVENTORY_HISTORY_COLLECTION, referenceMemoryDocId(ref)), { ...currentV2, ...data }, { merge:true });
+    const v2Index = state.referenceMemoryV2.findIndex(m => referenceMemoryDocId(m.ref || m.materialRef || m.id) === referenceMemoryDocId(ref));
+    if(v2Index >= 0) state.referenceMemoryV2[v2Index] = { ...state.referenceMemoryV2[v2Index], ...data };
+    else state.referenceMemoryV2.push({ id:referenceMemoryDocId(ref), ...data });
+
+    if(isOfficialHistoryActive(control)){
+      await setDoc(doc(db, "referenceMemory", referenceMemoryDocId(ref)), { ...currentLegacy, ...data, source:"official_local_excel_history" }, { merge:true });
+    }
   }catch(err){
     console.warn("No se pudo actualizar memoria de referencia", err);
   }
@@ -2337,10 +2521,196 @@ function renderExecutiveDashboard(){
 }
 
 function renderDriveConfig(){
-  $("#cfgDriveClient").value = driveConfig.clientId;
-  $("#cfgDriveFolder").value = driveConfig.folderId;
-  $("#cfgDriveFile").value = driveConfig.fileName;
-  $("#cfgDriveSheet").value = driveConfig.sheetName;
+  const mode = $("#cfgDriveClient");
+  const base = $("#cfgDriveFolder");
+  const file = $("#cfgDriveFile");
+  const sheet = $("#cfgDriveSheet");
+  if(mode) mode.value = "Carga local diaria, sin API de Drive";
+  if(base) base.value = "La base se reinicia con cada Excel cargado";
+  if(file) file.value = "Excel_siesa.xls / .xlsx";
+  if(sheet) sheet.value = state.settings.sheetName || driveConfig.sheetName || "Sheet1";
+  updateLocalExcelBadge();
+  renderHistoryControlStatus();
+}
+function selectSiesaFile(){
+  setView("driveView");
+  const input = $("#siesaFileInput");
+  if(input) input.click();
+}
+function handleSiesaFileSelected(event){
+  const file = event?.target?.files?.[0] || null;
+  if(!file){
+    state.localExcelFile = null;
+    state.localExcelMeta = null;
+    updateLocalExcelBadge();
+    return;
+  }
+  state.localExcelFile = file;
+  state.localExcelMeta = { name:file.name, size:file.size, lastModified:file.lastModified || Date.now() };
+  updateLocalExcelBadge();
+  logSync(`Archivo seleccionado: ${file.name} · ${Math.round(file.size/1024)} KB. Presiona Procesar Excel diario.`);
+}
+function updateLocalExcelBadge(){
+  const badge = $("#driveState");
+  const meta = state.localExcelMeta;
+  if(badge){
+    badge.textContent = meta ? "Archivo listo" : "Esperando Excel";
+    badge.className = meta ? "tag green" : "tag yellow";
+  }
+  const box = $("#siesaFileMeta");
+  if(box){
+    if(meta){
+      const date = new Date(meta.lastModified || Date.now()).toLocaleString("es-CO");
+      box.innerHTML = `<b>${esc(meta.name)}</b><br><small>${fmt(Math.round((meta.size || 0)/1024))} KB · modificado ${esc(date)}</small>`;
+    }else{
+      box.innerHTML = `<b>No hay archivo seleccionado.</b><br><small>Sube el Excel diario exportado desde SIESA para reconstruir la base del día.</small>`;
+    }
+  }
+}
+function renderHistoryControlStatus(){
+  const control = currentHistoryControl();
+  const official = isOfficialHistoryActive(control);
+  const badge = $("#historyModeBadge");
+  const box = $("#historyStatusBox");
+  const btn = $("#activateHistoryBtn");
+  if(badge){
+    badge.textContent = official ? "Histórico oficial" : "Histórico borrador";
+    badge.className = official ? "tag green" : "tag yellow";
+  }
+  if(box){
+    const start = historyStartDate(control);
+    box.innerHTML = official
+      ? `<b>Histórico oficial corriendo desde ${esc(control.officialStartedDate || start)}.</b><br><small>Las referencias contadas desde esa fecha bloquean repetición anual en la metodología local.</small>`
+      : `<b>Histórico nuevo en borrador desde ${esc(start)}.</b><br><small>Ya evita repetir referencias durante pruebas, pero no actualiza el histórico oficial antiguo hasta que se active.</small>`;
+  }
+  if(btn){
+    btn.disabled = official;
+    btn.textContent = official ? "Histórico oficial activo" : "Activar histórico oficial desde hoy";
+    btn.classList.toggle("secondary", official);
+    btn.classList.toggle("primary", !official);
+  }
+}
+async function startOfficialInventoryHistory(){
+  if(!hasAny(["jefe_logistico"])){
+    toast("Solo super admin o jefe logístico pueden activar el histórico oficial.", "error");
+    return;
+  }
+  const ok = window.confirm("¿Activar el histórico oficial desde hoy? Desde este momento los conteos del nuevo método quedarán como base oficial para no repetir referencias.");
+  if(!ok) return;
+  const today = todayISO();
+  const control = normalizeInventoryHistoryControl({
+    ...(state.historyControl || {}),
+    mode:"official",
+    historyStatus:"official",
+    officialStartedDate:today,
+    methodVersion:INVENTORY_HISTORY_VERSION,
+    isPersisted:true
+  });
+  await setDoc(doc(db, "syncState", INVENTORY_HISTORY_CONTROL_DOC), {
+    ...control,
+    activatedAt:nowTS(),
+    activatedByUid:state.user?.uid || "",
+    activatedByEmail:state.user?.email || "",
+    updatedAt:nowTS()
+  }, { merge:true });
+  state.historyControl = control;
+  renderHistoryControlStatus();
+  logSync(`Histórico oficial activado desde ${today}. Los conteos del nuevo método ya alimentan referenceMemory oficial.`);
+  toast("Histórico oficial activado desde hoy.");
+}
+async function syncFromLocalExcel(silent = false){
+  if(!hasAny(["jefe_logistico"])){
+    if(!silent) toast("Solo super admin o jefe logístico pueden cargar el Excel SIESA.", "error");
+    return;
+  }
+  if(state.syncRunning){
+    if(!silent) toast("Ya hay una carga en curso. Espera a que termine.");
+    return;
+  }
+  const file = state.localExcelFile || $("#siesaFileInput")?.files?.[0] || null;
+  if(!file){
+    if(!silent) toast("Selecciona primero el Excel diario de SIESA.", "error");
+    selectSiesaFile();
+    return;
+  }
+  state.syncRunning = true;
+  try{
+    await ensureAlertsForDailyCounts(false);
+    const historyControl = await ensureInventoryHistoryControl();
+    renderHistoryControlStatus();
+    logSync(`Histórico nuevo activo en modo ${historyControl.mode === "official" ? "OFICIAL" : "BORRADOR"}. Se usará para no repetir referencias contadas desde esta metodología.`);
+    logSync("Iniciando lectura local del Excel SIESA. No se usará Drive ni OAuth.");
+    const buffer = await file.arrayBuffer();
+    logSync(`Archivo leído desde el equipo/celular. Tamaño aproximado: ${Math.round(buffer.byteLength/1024)} KB.`);
+    const rows = parseExcel(buffer);
+    logSync(`Hoja leída correctamente. Filas detectadas: ${rows.length}.`);
+    const materials = rows.map(normalizeMaterial).filter(Boolean);
+    logSync(`Materiales válidos normalizados: ${materials.length}.`);
+    if(!materials.length) throw new Error("No se detectaron materiales válidos. Revisa encabezados: Referencia Item, Nombre Item, Ubicacion y Cantidad_existencia_1.");
+
+    await resetOpenDailyWorkBeforeUpload();
+    const localFileMeta = {
+      id:`LOCAL-${todayISO()}-${Date.now()}`,
+      name:file.name || "Excel_siesa.xls",
+      modifiedTime:new Date(file.lastModified || Date.now()).toISOString(),
+      size:file.size || buffer.byteLength,
+      source:"local_upload",
+      resetCountingCycle:true
+    };
+    await processSiesaMaterials(materials, localFileMeta, rows.length, { resetCountingCycle:true, source:"local_upload" });
+    await setDoc(doc(db, "syncState", "localExcel"), {
+      lastFileName:localFileMeta.name,
+      lastFileModifiedTime:localFileMeta.modifiedTime,
+      lastSyncDate:todayISO(),
+      lastRowsRead:rows.length,
+      lastMaterialsProcessed:materials.length,
+      resetCountingCycle:true,
+      historyMode:historyControl.mode,
+      historyStatus:historyControl.historyStatus,
+      historyVersion:INVENTORY_HISTORY_VERSION,
+      historyStartDate:historyStartDate(historyControl),
+      updatedAt:nowTS(),
+      updatedByUid:state.user.uid,
+      updatedByEmail:state.user.email
+    }, { merge:true });
+    await refreshAll();
+    logSync("Carga local finalizada. Base del día reconstruida; el histórico nuevo evita repetir referencias ya contadas.");
+    if(!silent) toast("Excel diario cargado. Base reiniciada y pendientes generados sin repetir histórico nuevo.");
+    notifyPendingWork("local_excel_upload");
+  }catch(err){
+    console.error(err);
+    logSync("ERROR: " + (err.message || err));
+    if(!silent) toast(err.message || "Error cargando Excel SIESA", "error");
+    if(silent) throw err;
+  }finally{
+    state.syncRunning = false;
+  }
+}
+async function resetOpenDailyWorkBeforeUpload(){
+  const openStatuses = ["assigned", "recount_required", "pending_inventory"];
+  const snap = await getDocs(query(collection(db, "countTasks"), where("status", "in", openStatuses), limit(1500)));
+  if(!snap.size){
+    logSync("No había tareas/reconteos operativos abiertos para reiniciar.");
+    return;
+  }
+  let batch = writeBatch(db);
+  let count = 0;
+  for(const d of snap.docs){
+    batch.set(d.ref, {
+      status:"superseded_by_daily_upload",
+      supersededAt:nowTS(),
+      supersededReason:"Carga diaria local: se reinicia base y no se conserva reconteo viejo",
+      updatedAt:nowTS(),
+      updatedByUid:state.user?.uid || "",
+      updatedByEmail:state.user?.email || ""
+    }, { merge:true });
+    count++;
+    if(count % 430 === 0){ await batch.commit(); batch = writeBatch(db); }
+  }
+  if(count % 430 !== 0) await batch.commit();
+  state.express.selectedTaskId = "";
+  localStorage.removeItem("expressSelectedTaskId");
+  logSync(`Reinicio operativo: ${count} tareas/reconteos abiertos fueron cerrados como reemplazados por la carga diaria.`);
 }
 function isDriveTokenUsable(){
   return Boolean(
@@ -2455,28 +2825,47 @@ async function driveApiJson(url, options = {}){
   }
   return await res.json();
 }
+function imageFileToDataUrl(file, maxSide = 960, quality = 0.72){
+  return new Promise(resolve => {
+    if(!file || !file.type?.startsWith("image/")){ resolve(""); return; }
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      try{
+        const scale = Math.min(1, maxSide / Math.max(img.width || maxSide, img.height || maxSide));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round((img.width || maxSide) * scale));
+        canvas.height = Math.max(1, Math.round((img.height || maxSide) * scale));
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      }catch(err){
+        URL.revokeObjectURL(url);
+        console.warn("No se pudo comprimir la foto", err);
+        resolve("");
+      }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(""); };
+    img.src = url;
+  });
+}
 async function uploadCountPhotoToDrive(file, materialRef, date, description = ""){
-  const token = await ensureDriveToken(false);
   const fileName = buildCountPhotoName(materialRef, date, description, file);
-  const metadata = await driveApiJson("https://www.googleapis.com/drive/v3/files?fields=id,name,parents,mimeType", {
-    method:"POST",
-    headers:{"Authorization":`Bearer ${token}`,"Content-Type":"application/json"},
-    body:JSON.stringify({ name:fileName, parents:[driveConfig.folderId], mimeType:file.type || "image/jpeg" })
-  });
-  const uploadRes = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${metadata.id}?uploadType=media`, {
-    method:"PATCH",
-    headers:{"Authorization":`Bearer ${token}`,"Content-Type":file.type || "application/octet-stream"},
-    body:file
-  });
-  if(!uploadRes.ok){
-    const txt = await uploadRes.text();
-    throw new Error(`No se pudo subir la foto a Drive: ${uploadRes.status} ${txt.slice(0,220)}`);
-  }
-  const finalMeta = await driveApiJson(`https://www.googleapis.com/drive/v3/files/${metadata.id}?fields=id,name,webViewLink,webContentLink,mimeType,createdTime` , {
-    headers:{"Authorization":`Bearer ${token}`}
-  });
-  logSync(`Foto subida a Drive: ${finalMeta.name}`);
-  return finalMeta;
+  const dataUrl = await imageFileToDataUrl(file);
+  const safeDataUrl = dataUrl && dataUrl.length < 850000 ? dataUrl : "";
+  const meta = {
+    id:`LOCAL-PHOTO-${Date.now()}`,
+    name:fileName,
+    webViewLink:"",
+    webContentLink:"",
+    mimeType:file.type || "image/jpeg",
+    size:file.size || 0,
+    localDataUrl:safeDataUrl,
+    storageMode:"firestore_inline_metadata"
+  };
+  logSync(`Foto registrada en la app: ${fileName}${safeDataUrl ? " con miniatura comprimida" : " como metadato"}.`);
+  return meta;
 }
 
 async function syncFromDrive(silent = false){
@@ -2547,8 +2936,8 @@ async function syncFromDrive(silent = false){
 async function ensureMandatoryDailyWork(showToast = true){
   await loadMaterials();
   if(!state.materials.length){
-    logSync("Agenda diaria no generada: no hay materiales en Firestore. Primero debe leerse correctamente el Excel SIESA.");
-    if(showToast) toast("No hay materiales cargados. Primero sincroniza el Excel SIESA desde Drive.", "error");
+    logSync("Agenda diaria no generada: no hay materiales en Firestore. Primero debe cargarse el Excel diario de SIESA dentro de la app.");
+    if(showToast) toast("No hay materiales cargados. Primero sube y procesa el Excel diario de SIESA.", "error");
     return;
   }
 
@@ -2653,6 +3042,24 @@ function getByAliases(row, list){
   return "";
 }
 
+function getByHeader(row, candidates = []){
+  const keys = Object.keys(row || {});
+  const map = new Map(keys.map(k => [norm(k), row[k]]));
+  for(const c of candidates){
+    const key = norm(c);
+    if(map.has(key)) return map.get(key);
+  }
+  for(const k of keys){
+    const nk = norm(k);
+    if(candidates.some(c => nk === norm(c) || nk.includes(norm(c)))) return row[k];
+  }
+  return "";
+}
+function siesaField(row, name, fallback = ""){
+  const value = getByHeader(row, Array.isArray(name) ? name : [name]);
+  return value === "" || value === null || value === undefined ? fallback : value;
+}
+
 function rawColumn(row, zeroIndex){
   const letter = String.fromCharCode(65 + zeroIndex);
   const direct = row?.[`__col${letter}`];
@@ -2685,19 +3092,31 @@ function bestDescriptionFromRow(row){
   return byHeader;
 }
 function normalizeMaterial(row){
-  const ref = String(getByAliases(row, aliases.ref) || rawColumn(row, 0)).trim();
+  const ref = String(siesaField(row, "Referencia Item", getByAliases(row, aliases.ref) || rawColumn(row, 1) || rawColumn(row, 0))).trim();
   if(!ref) return null;
-  const stock = num(getByAliases(row, aliases.stock));
-  const unitCost = num(getByAliases(row, aliases.cost));
-  const totalValue = num(getByAliases(row, aliases.totalValue));
 
-  // El nombre/descripción del material debe salir de encabezado si existe,
-  // y si no, de la columna E del Excel SIESA.
-  let description = bestDescriptionFromRow(row);
+  const stock = num(siesaField(row, ["Cantidad_existencia_1", "Cantidad existencia", "Existencia"], getByAliases(row, aliases.stock)));
+  const availableQty = num(siesaField(row, ["Cantidad_disponible_1", "Cantidad disponible"], ""));
+  const committedQty = num(siesaField(row, ["Cantidad_comprometida_1", "Cantidad comprometida"], ""));
+  const unitCost = num(siesaField(row, ["Costo_prom_uni", "Ultimo_costo_uni"], getByAliases(row, aliases.cost)));
+  const totalValue = num(siesaField(row, ["Costo_prom_tot", "Ultimo_costo_tot"], getByAliases(row, aliases.totalValue)));
 
-  let category = String(getByAliases(row, aliases.category) || "").trim();
-  let unit = String(getByAliases(row, aliases.unit) || "").trim();
-  let location = String(getByAliases(row, aliases.location) || "").trim();
+  let description = String(siesaField(row, "Nombre Item", bestDescriptionFromRow(row))).trim();
+  const families = [
+    siesaField(row, "Desc_Item1 Item", ""),
+    siesaField(row, "Desc_Item2 Item", ""),
+    siesaField(row, "Desc_Item3 Item", ""),
+    siesaField(row, "Desc_Item4 Item", ""),
+    siesaField(row, "Desc_Item5 Item", "")
+  ].map(v => String(v || "").trim()).filter(Boolean);
+  let category = families.length ? families.join(" / ") : String(getByAliases(row, aliases.category) || "").trim();
+  let unit = String(siesaField(row, "Unidad_inventario Item", getByAliases(row, aliases.unit))).trim();
+  let location = String(siesaField(row, "Ubicacion", getByAliases(row, aliases.location))).trim();
+  const locationName = String(siesaField(row, "Nombre Ubicacion", "")).trim();
+  const warehouse = String(siesaField(row, "Bodega", "")).trim();
+  const lot = String(siesaField(row, "Lote", "")).trim();
+  const abcCost = String(siesaField(row, "ABC_rotacion_costo", "")).trim();
+  const abcTurns = String(siesaField(row, "ABC_rotacion_veces", "")).trim();
 
   let base = { ref, id:safeId(ref), description, category, location, unit };
   base = enrichMaterialFromCatalog(base);
@@ -2712,16 +3131,24 @@ function normalizeMaterial(row){
 
   return {
     ref, id:safeId(ref), description, category, catalogLine:base.catalogLine || category,
-    location, unit,
-    stockSystem:stock, unitCost, inventoryValue: totalValue || stock * unitCost,
-    sourceMovement:num(getByAliases(row, aliases.movement)), sourceLastMoveDate:toISO(getByAliases(row, aliases.lastMove)),
-    isCable, cableReason:base.cableReason || (isCable ? "palabras_clave" : "material_normal"), catalogFound:Boolean(base.catalogFound), active:true
+    location, locationName, warehouse, lot, unit,
+    stockSystem:stock, availableQty, committedQty, unitCost, inventoryValue: totalValue || stock * unitCost,
+    abcCost, abcTurns,
+    lastPurchaseDate:toISO(siesaField(row, "Fecha_ult_compra", "")),
+    lastSaleDate:toISO(siesaField(row, "Fecha_ult_venta", "")),
+    lastEntryDate:toISO(siesaField(row, "Fecha_ult_entrada", "")),
+    lastExitDate:toISO(siesaField(row, "Fecha_ult_salida", "")),
+    sourceMovement:num(siesaField(row, "Consumo_promedio", getByAliases(row, aliases.movement))),
+    sourceLastMoveDate:toISO(siesaField(row, ["Fecha_ult_salida", "Fecha_ult_entrada", "Fecha_ult_venta", "Fecha_ult_compra"], getByAliases(row, aliases.lastMove))),
+    isCable, cableReason:base.cableReason || (isCable ? (isMeterUnit ? "unidad_metro_y_palabra_clave" : "palabras_clave") : "material_normal"), catalogFound:Boolean(base.catalogFound), active:true
   };
 }
 
-async function processSiesaMaterials(incoming, file, rowsRead){
+async function processSiesaMaterials(incoming, file, rowsRead, options = {}){
   const existingSnap = await getDocs(query(collection(db, "materials"), limit(7000)));
   const existingMap = new Map(existingSnap.docs.map(d => [d.data().ref, { id:d.id, ...d.data() }]));
+  const historyControl = await ensureInventoryHistoryControl();
+  const newHistoryMap = await loadReferenceMemoryV2Map(historyControl);
   let memoryMap = new Map();
   try{
     const memorySnap = await getDocs(query(collection(db, "referenceMemory"), limit(8000)));
@@ -2732,10 +3159,14 @@ async function processSiesaMaterials(incoming, file, rowsRead){
   const firstSync = existingSnap.empty;
   const today = todayISO();
   const yearField = annualFieldName();
+  const resetCycle = options.resetCountingCycle === true || file?.resetCountingCycle === true;
 
   const prepared = incoming.map(m => {
     const old = existingMap.get(m.ref);
-    const mem = memoryMap.get(m.ref) || memoryMap.get(safeId(m.ref)) || null;
+    const newMem = newHistoryMap.get(norm(m.ref)) || newHistoryMap.get(norm(safeId(m.ref))) || null;
+    const legacyMem = memoryMap.get(m.ref) || memoryMap.get(safeId(m.ref)) || null;
+    const mem = resetCycle ? newMem : (newMem || legacyMem);
+    const countedInNewHistory = Boolean(newMem && isRelevantHistoryMemory(newMem, historyControl));
     const isNewAfterBase = !firstSync && !old && !mem;
     const change = old ? Number(m.stockSystem || 0) - Number(old.stockSystem || 0) : 0;
     const absChange = Math.abs(change);
@@ -2752,9 +3183,9 @@ async function processSiesaMaterials(incoming, file, rowsRead){
       movementIndex,
       variabilityIndex,
       firstSeenDate: old?.firstSeenDate || today,
-      lastVerifiedDate: isNewAfterBase ? today : (old?.lastVerifiedDate || mem?.lastVerifiedDate || mem?.lastCountDate || ""),
+      lastVerifiedDate: resetCycle ? (countedInNewHistory ? (mem?.lastVerifiedDate || mem?.lastCountDate || "") : "") : (isNewAfterBase ? today : (old?.lastVerifiedDate || mem?.lastVerifiedDate || mem?.lastCountDate || "")),
       lastMovementDate: change !== 0 ? today : (old?.lastMovementDate || m.sourceLastMoveDate || ""),
-      lastCountDate: isNewAfterBase ? today : (old?.lastCountDate || mem?.lastCountDate || ""),
+      lastCountDate: resetCycle ? (countedInNewHistory ? (mem?.lastCountDate || "") : "") : (isNewAfterBase ? today : (old?.lastCountDate || mem?.lastCountDate || "")),
       lastCountedQty: mem?.lastCountedQty ?? old?.lastCountedQty ?? null,
       lastCountSystemQty: mem?.lastSystemQty ?? old?.lastCountSystemQty ?? null,
       lastCountDiff: mem?.lastDiff ?? old?.lastCountDiff ?? null,
@@ -2764,11 +3195,18 @@ async function processSiesaMaterials(incoming, file, rowsRead){
       lastCountCause: mem?.lastCause || old?.lastCountCause || "",
       lastCountedBy: mem?.lastCountedBy || old?.lastCountedBy || "",
       referenceCode: mem?.referenceCode || old?.referenceCode || inventoryCode("material", m.ref),
-      [yearField]: isNewAfterBase ? true : (old?.[yearField] === true || mem?.[yearField] === true || (mem?.lastCountDate || "").startsWith(String(yearOf(today))) ? true : false),
-      autoCountedReason: isNewAfterBase ? "nuevo_registro_siesa" : (old?.autoCountedReason || ""),
+      [yearField]: resetCycle ? countedInNewHistory : (isNewAfterBase ? true : (old?.[yearField] === true || mem?.[yearField] === true || (mem?.lastCountDate || "").startsWith(String(yearOf(today))) ? true : false)),
+      autoCountedReason: resetCycle ? (countedInNewHistory ? "historico_nuevo_local" : "") : (isNewAfterBase ? "nuevo_registro_siesa" : (old?.autoCountedReason || "")),
+      historyMode:historyControl.mode,
+      historyStatus:historyControl.historyStatus,
+      historyVersion:INVENTORY_HISTORY_VERSION,
+      historyStartDate:historyStartDate(historyControl),
+      resetCountingCycle:resetCycle,
+      countCycleDate:resetCycle ? today : (old?.countCycleDate || ""),
       sourceFileId: file.id,
       sourceFileName: file.name,
       sourceModifiedTime: file.modifiedTime,
+      sourceMode: options.source || file.source || "drive",
       lastSyncDate: today,
       nextDueDate: "",
       frequency: 0,
@@ -2796,13 +3234,20 @@ async function processSiesaMaterials(incoming, file, rowsRead){
     rowsRead,
     materialsProcessed:finalMaterials.length,
     firstSync,
+    sourceMode:options.source || file.source || "drive",
+    resetCountingCycle:resetCycle,
+    countCycleDate:resetCycle ? today : "",
+    historyMode:historyControl.mode,
+    historyStatus:historyControl.historyStatus,
+    historyVersion:INVENTORY_HISTORY_VERSION,
+    historyStartDate:historyStartDate(historyControl),
     newAutoCounted:finalMaterials.filter(m => m.autoCountedReason === "nuevo_registro_siesa" && m[yearField] === true).length,
     createdAt:nowTS(),
     createdByUid:state.user.uid,
     createdByEmail:state.user.email
   });
 
-  logSync(`Repositorio SIESA actualizado. Primera base: ${firstSync ? "SI" : "NO"}. Nuevos auto-contados: ${finalMaterials.filter(m => m.autoCountedReason === "nuevo_registro_siesa" && m[yearField] === true).length}.`);
+  logSync(`Repositorio SIESA actualizado. Primera base: ${firstSync ? "SI" : "NO"}. Reinicio conteo: ${resetCycle ? "SI" : "NO"}. Histórico nuevo: ${historyControl.mode === "official" ? "OFICIAL" : "BORRADOR"}. Ya contados por histórico nuevo: ${finalMaterials.filter(m => m.autoCountedReason === "historico_nuevo_local" && m[yearField] === true).length}. Nuevos auto-contados: ${finalMaterials.filter(m => m.autoCountedReason === "nuevo_registro_siesa" && m[yearField] === true).length}.`);
   await forceMandatoryDailyTasks(false);
   await loadTasks();
 
@@ -2889,6 +3334,24 @@ function compactMaterial(m){
     sourceFileId:m.sourceFileId || "",
     sourceFileName:m.sourceFileName || "",
     sourceModifiedTime:m.sourceModifiedTime || "",
+    sourceMode:m.sourceMode || "",
+    resetCountingCycle:Boolean(m.resetCountingCycle),
+    countCycleDate:m.countCycleDate || "",
+    historyMode:m.historyMode || currentHistoryControl().mode,
+    historyStatus:m.historyStatus || currentHistoryControl().historyStatus,
+    historyVersion:m.historyVersion || INVENTORY_HISTORY_VERSION,
+    historyStartDate:m.historyStartDate || historyStartDate(currentHistoryControl()),
+    warehouse:m.warehouse || "",
+    locationName:m.locationName || "",
+    lot:m.lot || "",
+    availableQty:Number(m.availableQty || 0),
+    committedQty:Number(m.committedQty || 0),
+    abcCost:m.abcCost || "",
+    abcTurns:m.abcTurns || "",
+    lastPurchaseDate:m.lastPurchaseDate || "",
+    lastSaleDate:m.lastSaleDate || "",
+    lastEntryDate:m.lastEntryDate || "",
+    lastExitDate:m.lastExitDate || "",
     lastSyncDate:m.lastSyncDate || "",
     active:m.active !== false,
     updatedAt:m.updatedAt || nowTS()
@@ -3144,8 +3607,8 @@ async function forceMandatoryDailyTasks(showToast = true){
   await loadTasks();
 
   if(!state.materials.length){
-    logSync("No se puede crear conteo obligatorio: no hay materiales. Sincroniza primero Excel_siesa.xls.");
-    if(showToast) toast("No hay materiales en Firestore. Primero sincroniza el Excel SIESA.", "error");
+    logSync("No se puede crear conteo obligatorio: no hay materiales. Carga primero Excel_siesa.xls desde la app.");
+    if(showToast) toast("No hay materiales en Firestore. Primero sube el Excel diario de SIESA.", "error");
     return;
   }
 
@@ -3221,8 +3684,10 @@ async function forceMandatoryDailyTasks(showToast = true){
 
   await batchSet("countTasks", tasks);
   logSync(`Conteo obligatorio creado: ${tasks.length}. Meta de hoy: ${target}. Pendientes anuales: ${totalPending}. Días hábiles restantes: ${countWorkdaysUntilYearEnd(today)}. Método: Pareto aleatorio sin repetición.`);
+  await ensureAlertsForDailyCounts(false);
   if(showToast) toast(`Conteo obligatorio creado: ${tasks.length}`);
-  notifyUser("Conteo obligatorio generado", `${tasks.length} materiales para contar hoy.`, { tag:`conteo-${todayISO()}` });
+  notifyUser("Conteo obligatorio generado", `${tasks.length} materiales para contar hoy.`, { tag:`conteo-${todayISO()}`, urgent:true });
+  notifyPendingWork("daily_tasks_generated");
 }
 
 function weightedParetoShuffle(materials, seedText){
@@ -3286,7 +3751,7 @@ async function saveCount(e){
     const context = task || caseItem;
     const diffMeta = buildDiffMeta(diff, systemQty, Number($("#countUnitCost")?.value || context?.unitCost || 0));
     const blindOperator = shouldBlindCount() && isOperatorRole();
-    if(photoFile){ toast("Sin conexión no se puede subir foto a Drive. Espera conexión o guarda sin foto.", "error"); return; }
+    if(photoFile){ toast("Sin conexión no se puede adjuntar foto. Espera conexión o guarda sin foto.", "error"); return; }
     if(!blindOperator && requiresPhotoForCount(diffMeta, context)){ toast("Este conteo requiere foto obligatoria; debe guardarse cuando vuelva la conexión.", "error"); return; }
     if(!blindOperator && requiresSupportForCount(diffMeta) && !support && !obs && cause === "N/A"){ toast("Registra causa, soporte u observación para dejar trazabilidad de la diferencia.", "error"); return; }
     enqueueOfflineCount(buildOfflinePayload({ task, caseItem, mode, saveAndNext }));
@@ -3315,7 +3780,7 @@ async function saveCount(e){
         photoMeta = await uploadCountPhotoToDrive(photoFile, task.materialRef, date, task.description || "");
         support = support ? `${support} | Foto: ${photoMeta.webViewLink || photoMeta.name}` : (photoMeta.webViewLink || photoMeta.name);
       }catch(err){
-        toast("No se pudo subir la foto a Drive: " + (err.message || err), "error");
+        toast("No se pudo adjuntar la foto: " + (err.message || err), "error");
         throw err;
       }
     }
@@ -3348,6 +3813,8 @@ async function saveCount(e){
       photoDriveName: photoMeta?.name || "",
       photoDriveUrl: photoMeta?.webViewLink || "",
       photoDriveDownloadUrl: photoMeta?.webContentLink || "",
+      photoLocalDataUrl: photoMeta?.localDataUrl || "",
+      photoStorageMode: photoMeta?.storageMode || "",
       countedByUid:state.user.uid,
       countedByEmail:state.user.email,
       countedByRole:role(),
@@ -3486,7 +3953,7 @@ async function saveCount(e){
         photoMeta = await uploadCountPhotoToDrive(photoFile, c.materialRef, date, c.description || "");
         support = support ? `${support} | Foto: ${photoMeta.webViewLink || photoMeta.name}` : (photoMeta.webViewLink || photoMeta.name);
       }catch(err){
-        toast("No se pudo subir la foto a Drive: " + (err.message || err), "error");
+        toast("No se pudo adjuntar la foto: " + (err.message || err), "error");
         throw err;
       }
     }
@@ -3515,6 +3982,8 @@ async function saveCount(e){
       photoDriveName: photoMeta?.name || "",
       photoDriveUrl: photoMeta?.webViewLink || "",
       photoDriveDownloadUrl: photoMeta?.webContentLink || "",
+      photoLocalDataUrl: photoMeta?.localDataUrl || "",
+      photoStorageMode: photoMeta?.storageMode || "",
       countedByUid:state.user.uid,
       countedByEmail:state.user.email,
       countedByRole:role(),
@@ -3719,17 +4188,12 @@ function scheduleAutoSyncChecker(){
   const check = async () => {
     const now = new Date();
     if(now.getHours() < Number(state.settings.autoSyncHour || 8)) return;
-    const ref = doc(db, "syncState", "drive");
+    const ref = doc(db, "syncState", "localExcelReminder");
     const snap = await getDoc(ref);
-    if(snap.exists() && snap.data().lastAutoSyncDate === todayISO()) return;
-    try{
-      logSync("Auto sync 8:00 a.m.: verificando. Si Drive no está conectado, no se abrirá ventana automática.");
-      await syncFromDrive(true);
-      await setDoc(ref, { lastAutoSyncDate:todayISO(), updatedAt:nowTS() }, { merge:true });
-    }catch(err){
-      logSync("Auto sync pendiente: primero presiona Conectar Drive. Motivo: " + (err.message || err));
-      await ensureMandatoryDailyWork(false).catch(() => {});
-    }
+    if(snap.exists() && snap.data().lastReminderDate === todayISO()) return;
+    await setDoc(ref, { lastReminderDate:todayISO(), updatedAt:nowTS() }, { merge:true });
+    logSync("Recordatorio: hoy debes subir el Excel SIESA desde la app para reconstruir la base diaria. No se ejecuta lectura automática por Drive.");
+    notifyUser("Subir Excel SIESA", "Carga el Excel diario para reiniciar la base y generar conteos.", { tag:`excel-reminder-${todayISO()}`, urgent:true });
   };
   setTimeout(check, 2500);
   state.autoTimer = setInterval(check, 5 * 60 * 1000);
@@ -3792,6 +4256,17 @@ function playAlertSound(kind = "info"){
     osc.start(now);
     osc.stop(now + 0.36);
   }catch(err){ console.warn("No se pudo reproducir sonido", err); }
+}
+
+async function ensureAlertsForDailyCounts(showToast = false){
+  state.notificationsEnabled = true;
+  localStorage.setItem("inventarioAlertsEnabled", "1");
+  initAudioContext();
+  if("Notification" in window && Notification.permission === "default"){
+    try{ await Notification.requestPermission(); }catch(_){}
+  }
+  playAlertSound("info");
+  if(showToast) toast("Alertas activadas para conteos diarios.");
 }
 
 async function enableAlerts(){

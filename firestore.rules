@@ -95,6 +95,20 @@ service cloud.firestore {
       allow delete: if superAdmin();
     }
 
+
+
+    match /referenceMemory/{memoryId} {
+      allow read: if active();
+      allow create, update: if hasAnyRole(["inventario", "jefe_logistico", "auditoria"]);
+      allow delete: if superAdmin();
+    }
+
+    match /referenceMemoryV2/{memoryId} {
+      allow read: if active();
+      allow create, update: if hasAnyRole(["inventario", "jefe_logistico", "auditoria"]);
+      allow delete: if superAdmin();
+    }
+
     match /syncLogs/{syncId} {
       allow read: if active();
       allow create: if hasAnyRole(["jefe_logistico"]);
