@@ -58,6 +58,8 @@ const state = {
   referenceMemory: [],
   referenceMemoryV2: [],
   historyControl: null,
+  historyCloudAvailable: true,
+  historyPermissionError: "",
   cableSession: null,
   activeView: "dashboardView",
   autoTimer: null,
@@ -159,6 +161,8 @@ const aliases = {
 const INVENTORY_HISTORY_VERSION = "local_excel_v2";
 const INVENTORY_HISTORY_COLLECTION = "referenceMemoryV2";
 const INVENTORY_HISTORY_CONTROL_DOC = "inventoryHistoryControl";
+const LOCAL_REFERENCE_MEMORY_V2_KEY = "inventarioReferenceMemoryV2Local";
+const LOCAL_HISTORY_CONTROL_KEY = "inventarioHistoryControlLocal";
 
 
 function todayISO(){
@@ -709,6 +713,49 @@ function currentHistoryControl(){
   state.historyControl = normalizeInventoryHistoryControl(state.historyControl || {});
   return state.historyControl;
 }
+function isPermissionDeniedError(err){
+  const code = String(err?.code || "").toLowerCase();
+  const msg = String(err?.message || err || "").toLowerCase();
+  return code.includes("permission-denied") || msg.includes("missing or insufficient permissions");
+}
+function localReferenceMemoryV2List(){
+  try{
+    const raw = localStorage.getItem(LOCAL_REFERENCE_MEMORY_V2_KEY) || "[]";
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter(Boolean) : [];
+  }catch(_err){
+    return [];
+  }
+}
+function saveLocalReferenceMemoryV2List(items = []){
+  try{
+    localStorage.setItem(LOCAL_REFERENCE_MEMORY_V2_KEY, JSON.stringify(items.slice(0, 12000)));
+  }catch(err){
+    console.warn("No se pudo guardar histórico local V2", err);
+  }
+}
+function upsertLocalReferenceMemoryV2(ref, data = {}){
+  if(!ref) return;
+  const id = referenceMemoryDocId(ref);
+  const list = localReferenceMemoryV2List();
+  const idx = list.findIndex(m => referenceMemoryDocId(m.ref || m.materialRef || m.id || "") === id);
+  const next = { id, ...(idx >= 0 ? list[idx] : {}), ...data, ref:data.ref || data.materialRef || ref, materialRef:data.materialRef || data.ref || ref, savedIn:"local_fallback", updatedAtLocal:new Date().toISOString() };
+  if(idx >= 0) list[idx] = next; else list.push(next);
+  saveLocalReferenceMemoryV2List(list);
+  const stIdx = state.referenceMemoryV2.findIndex(m => referenceMemoryDocId(m.ref || m.materialRef || m.id || "") === id);
+  if(stIdx >= 0) state.referenceMemoryV2[stIdx] = { ...state.referenceMemoryV2[stIdx], ...next };
+  else state.referenceMemoryV2.push(next);
+}
+function setHistoryCloudPermissionIssue(err, context = "histórico nuevo"){
+  state.historyCloudAvailable = false;
+  state.historyPermissionError = isPermissionDeniedError(err)
+    ? "Firestore no tiene permisos publicados para referenceMemoryV2."
+    : String(err?.message || err || "No fue posible leer referenceMemoryV2.");
+  console.warn(`${context}: se usará respaldo local temporal.`, err);
+  if(typeof logSync === "function"){
+    logSync(`Atención: ${state.historyPermissionError} Se usará respaldo local temporal en este navegador, pero para que funcione entre celulares debes publicar las reglas de Firestore.`);
+  }
+}
 function isOfficialHistoryActive(control = currentHistoryControl()){
   return control.mode === "official" && Boolean(control.officialStartedDate);
 }
@@ -768,9 +815,11 @@ async function loadReferenceMemoryV2Map(control = currentHistoryControl()){
   try{
     const snap = await getDocs(query(collection(db, INVENTORY_HISTORY_COLLECTION), limit(8000)));
     state.referenceMemoryV2 = snap.docs.map(d => ({ id:d.id, ...d.data(), historyCollection:INVENTORY_HISTORY_COLLECTION }));
+    state.historyCloudAvailable = true;
+    state.historyPermissionError = "";
   }catch(err){
-    console.warn("No se pudo leer referenceMemoryV2. La app continuará sin histórico nuevo.", err);
-    state.referenceMemoryV2 = [];
+    setHistoryCloudPermissionIssue(err, "No se pudo leer referenceMemoryV2");
+    state.referenceMemoryV2 = localReferenceMemoryV2List().map(m => ({ ...m, historyCollection:INVENTORY_HISTORY_COLLECTION }));
   }
   const map = new Map();
   state.referenceMemoryV2
@@ -1771,6 +1820,7 @@ function referenceMemoryFromCount(payload = {}){
 async function persistReferenceMemoryFromCount(payload = {}){
   const ref = payload.materialRef || payload.ref || "";
   if(!ref) return;
+  let dataToPersist = null;
   try{
     const control = await ensureInventoryHistoryControl();
     const currentV2 = memoryV2ByRef(ref) || {};
@@ -1786,6 +1836,7 @@ async function persistReferenceMemoryFromCount(payload = {}){
       draftStartedDate:control.draftStartedDate || "",
       historyOrigin:"local_excel_upload"
     };
+    dataToPersist = data;
 
     await setDoc(doc(db, INVENTORY_HISTORY_COLLECTION, referenceMemoryDocId(ref)), { ...currentV2, ...data }, { merge:true });
     const v2Index = state.referenceMemoryV2.findIndex(m => referenceMemoryDocId(m.ref || m.materialRef || m.id) === referenceMemoryDocId(ref));
@@ -1796,7 +1847,11 @@ async function persistReferenceMemoryFromCount(payload = {}){
       await setDoc(doc(db, "referenceMemory", referenceMemoryDocId(ref)), { ...currentLegacy, ...data, source:"official_local_excel_history" }, { merge:true });
     }
   }catch(err){
-    console.warn("No se pudo actualizar memoria de referencia", err);
+    console.warn("No se pudo actualizar memoria de referencia en Firestore", err);
+    if(dataToPersist){
+      upsertLocalReferenceMemoryV2(ref, dataToPersist);
+      setHistoryCloudPermissionIssue(err, "No se pudo guardar referenceMemoryV2");
+    }
   }
 }
 function saveOfflineQueue(){
@@ -2579,9 +2634,12 @@ function renderHistoryControlStatus(){
   }
   if(box){
     const start = historyStartDate(control);
+    const cloudWarn = state.historyCloudAvailable === false
+      ? `<br><small class="danger-text">Permisos pendientes en Firestore: el histórico se está guardando solo como respaldo local temporal.</small>`
+      : "";
     box.innerHTML = official
-      ? `<b>Histórico oficial corriendo desde ${esc(control.officialStartedDate || start)}.</b><br><small>Las referencias contadas desde esa fecha bloquean repetición anual en la metodología local.</small>`
-      : `<b>Histórico nuevo en borrador desde ${esc(start)}.</b><br><small>Ya evita repetir referencias durante pruebas, pero no actualiza el histórico oficial antiguo hasta que se active.</small>`;
+      ? `<b>Histórico oficial corriendo desde ${esc(control.officialStartedDate || start)}.</b><br><small>Las referencias contadas desde esa fecha bloquean repetición anual en la metodología local.</small>${cloudWarn}`
+      : `<b>Histórico nuevo en borrador desde ${esc(start)}.</b><br><small>Ya evita repetir referencias durante pruebas, pero no actualiza el histórico oficial antiguo hasta que se active.</small>${cloudWarn}`;
   }
   if(btn){
     btn.disabled = official;
@@ -2606,13 +2664,19 @@ async function startOfficialInventoryHistory(){
     methodVersion:INVENTORY_HISTORY_VERSION,
     isPersisted:true
   });
-  await setDoc(doc(db, "syncState", INVENTORY_HISTORY_CONTROL_DOC), {
-    ...control,
-    activatedAt:nowTS(),
-    activatedByUid:state.user?.uid || "",
-    activatedByEmail:state.user?.email || "",
-    updatedAt:nowTS()
-  }, { merge:true });
+  try{
+    await setDoc(doc(db, "syncState", INVENTORY_HISTORY_CONTROL_DOC), {
+      ...control,
+      activatedAt:nowTS(),
+      activatedByUid:state.user?.uid || "",
+      activatedByEmail:state.user?.email || "",
+      updatedAt:nowTS()
+    }, { merge:true });
+  }catch(err){
+    localStorage.setItem(LOCAL_HISTORY_CONTROL_KEY, JSON.stringify({ ...control, updatedAtLocal:new Date().toISOString() }));
+    setHistoryCloudPermissionIssue(err, "No se pudo activar histórico oficial en Firestore");
+    toast("No se pudo guardar la activación en Firestore. Revisa reglas antes de usarlo oficialmente.", "error");
+  }
   state.historyControl = control;
   renderHistoryControlStatus();
   logSync(`Histórico oficial activado desde ${today}. Los conteos del nuevo método ya alimentan referenceMemory oficial.`);
